@@ -14,6 +14,16 @@ static s32 spk_level, spk_dc; /* low-passed speaker level + DC blocker */
 
 static void audio_event(void);
 
+/* Soft-knee limiter: hard clipping of a hot mix (music + digital sfx) sounds like crackle;
+ * compress the top quarter of the range instead and only then saturate. */
+static s32 soften(s32 v) {
+  if (v > 24576) v = 24576 + ((v - 24576) >> 2);
+  else if (v < -24576) v = -24576 + ((v + 24576) >> 2);
+  if (v > 32767) v = 32767;
+  if (v < -32768) v = -32768;
+  return v;
+}
+
 void audio_init(void) {
   ring_head = ring_tail = 0;
   last_ns = 0;
@@ -45,9 +55,7 @@ static void audio_event(void) {
   sb_render(mixbuf, frames);
   for (u32 f = 0; f < frames; f++) {
     if (ring_tail - ring_head >= RING_FRAMES) break; /* full: drop */
-    s32 l = mixbuf[f * 2], r = mixbuf[f * 2 + 1];
-    if (l > 32767) l = 32767; if (l < -32768) l = -32768;
-    if (r > 32767) r = 32767; if (r < -32768) r = -32768;
+    s32 l = soften(mixbuf[f * 2]), r = soften(mixbuf[f * 2 + 1]);
     u32 idx = (ring_tail % RING_FRAMES) * 2;
     ring[idx] = (s16)l;
     ring[idx + 1] = (s16)r;

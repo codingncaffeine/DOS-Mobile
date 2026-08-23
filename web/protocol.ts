@@ -13,6 +13,7 @@ export const DEFAULT_SETTINGS: MachineSettings = { gen: 5, mhz: 66, ramKb: 8192,
 export type ToWorker =
   | { type: "init"; wasm: ArrayBuffer; settings: MachineSettings; dosBase: string; canvas?: OffscreenCanvas; debug?: boolean }
   | { type: "key"; codes: number[] }
+  | { type: "cad" }
   | { type: "mouse"; dx: number; dy: number; buttons: number }
   | { type: "reset"; warm: boolean }
   | { type: "setSpeed"; mhz: number }

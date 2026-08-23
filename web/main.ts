@@ -126,7 +126,7 @@ proxy.addEventListener("beforeinput", (e: Event) => {
   }
 });
 proxy.addEventListener("input", () => { proxy.value = ""; });
-$("btn-cad").onclick = () => { send({ type: "key", codes: [0x1D, 0x38, 0xE0, 0x53, 0xE0, 0xD3, 0xB8, 0x9D] }); };
+$("btn-cad").onclick = () => { send({ type: "cad" }); };
 
 /* ---------------- menu ---------------- */
 $("btn-menu").onclick = () => { menu.hidden = !menu.hidden; };

@@ -53,18 +53,41 @@ class DmAudio extends AudioWorkletProcessor {
 
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const out = outputs[0];
+    // Prime a cushion before starting and re-prime after an underrun: playing from the queue's
+    // edge turns every producer hiccup into a click ("scratchy" audio). While silent, decay the
+    // held sample so stopping doesn't click either.
+    if (!this.started) {
+      if (this.queuedFrames >= this.srcRate * 0.06) this.started = true;
+      else {
+        for (let i = 0; i < out[0].length; i++) {
+          this.last[0] *= 0.94; this.last[1] *= 0.94;
+          out[0][i] = this.last[0];
+          if (out[1]) out[1][i] = this.last[1];
+        }
+        return true;
+      }
+    }
     const step = this.srcRate / sampleRate;
     for (let i = 0; i < out[0].length; i++) {
       this.pos += step;
-      let l = 0, r = 0;
-      while (this.pos >= 1) { this.pos -= 1; [l, r] = this.last = this.pull(); }
-      if (this.pos < 1 && this.last) { l = this.last[0]; r = this.last[1]; }
-      out[0][i] = l;
-      if (out[1]) out[1][i] = r;
+      while (this.pos >= 1 && this.queuedFrames > 0) { this.pos -= 1; this.last = this.pull(); }
+      if (this.pos >= 1) { // ran dry mid-block: go back to priming
+        this.started = false;
+        this.pos = 0;
+        for (; i < out[0].length; i++) {
+          this.last[0] *= 0.94; this.last[1] *= 0.94;
+          out[0][i] = this.last[0];
+          if (out[1]) out[1][i] = this.last[1];
+        }
+        return true;
+      }
+      out[0][i] = this.last[0];
+      if (out[1]) out[1][i] = this.last[1];
     }
     return true;
   }
   last: [number, number] = [0, 0];
+  started = false;
 }
 
 registerProcessor("dm-audio", DmAudio);

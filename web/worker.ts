@@ -38,6 +38,7 @@ let lastWall = 0;
 let backlogUs = 0;
 let cpuBusyMs = 0, windowStart = 0, windowInsns = 0n, windowEmuUs = 0;
 let flushTimer: ReturnType<typeof setInterval> | undefined;
+let resetCount = 0;
 let debugText = false;
 let autoType: { text: string; after: number } | null = null;
 let audioPtr = 0;
@@ -245,7 +246,7 @@ function tick() {
     const r = core.ex.core_run_us(sliceUs);
     ran += sliceUs;
     if (r === 1) { post({ type: "error", text: "The machine stopped (see log)." }); running = false; paint(); return; }
-    if (r === 2) { post({ type: "log", text: "machine reset" }); }
+    if (r === 2) { resetCount++; post({ type: "log", text: "machine reset" }); }
     if (performance.now() - t0 > 12) break; // yield to messages
   }
   if (autoType && Number(core.ex.core_emu_ns()) > autoType.after && promptVisible()) {
@@ -317,6 +318,18 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       case "key":
         for (const c of m.codes) core.ex.core_key(c);
         break;
+      case "cad": {
+        // faithful Ctrl+Alt+Del first (a game may handle it); force a warm reboot if ignored
+        const seen = resetCount;
+        for (const c of [0x1D, 0x38, 0xE0, 0x53, 0xE0, 0xD3, 0xB8, 0x9D]) core.ex.core_key(c);
+        setTimeout(() => {
+          if (resetCount === seen && running) {
+            core.ex.core_reset(1);
+            post({ type: "log", text: "Ctrl+Alt+Del was ignored by the running program; forced a warm reboot" });
+          }
+        }, 1500);
+        break;
+      }
       case "mouse":
         core.ex.core_mouse(m.dx, m.dy, m.buttons);
         break;
