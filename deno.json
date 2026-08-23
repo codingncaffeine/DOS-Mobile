@@ -1,0 +1,17 @@
+{
+  "name": "dos-mobile",
+  "version": "0.0.1",
+  "tasks": {
+    "build": "deno run -A tools/build.ts",
+    "serve": "deno run -A tools/serve.ts",
+    "test": "deno test -A tests/",
+    "msdos": "deno run -A tools/msdos-build.ts",
+    "deploy": "deno run -A tools/deploy.ts"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom", "dom.iterable", "webworker"],
+    "strict": true
+  },
+  "fmt": { "lineWidth": 100, "indentWidth": 2, "semiColons": true, "singleQuote": false },
+  "lint": { "rules": { "tags": ["recommended"] } }
+}

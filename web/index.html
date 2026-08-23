@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#101418">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>DOS Mobile</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <span id="brand">DOS Mobile</span>
+    <span id="status">starting…</span>
+    <span id="spacer"></span>
+    <button id="btn-keyboard" title="Show keyboard">⌨</button>
+    <button id="btn-cad" title="Ctrl+Alt+Del">⟲</button>
+    <button id="btn-menu" title="Menu">☰</button>
+  </header>
+  <main id="screen-wrap">
+    <canvas id="screen" width="720" height="400"></canvas>
+    <div id="overlay"><div id="overlay-text">Loading…</div></div>
+    <input id="kbd-proxy" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="keyboard input">
+  </main>
+  <section id="menu" hidden>
+    <div class="menu-row"><label>Speed <span id="speed-label">66 MHz</span></label>
+      <input id="speed" type="range" min="1" max="300" value="66"></div>
+    <div class="menu-row">
+      <button id="btn-reset">Reboot</button>
+      <button id="btn-floppy">Insert floppy image…</button>
+      <button id="btn-export">Export drive C:</button>
+      <button id="btn-wipe">Wipe drive C:</button>
+      <button id="btn-fullscreen">Fullscreen</button>
+    </div>
+    <div class="menu-row small">Drop a floppy image (.img/.ima) anywhere on the screen to insert it into A:.</div>
+    <pre id="log"></pre>
+  </section>
+  <input id="file-floppy" type="file" accept=".img,.ima,.dsk,.vfd" hidden>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

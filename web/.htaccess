@@ -1,0 +1,16 @@
+AddType application/wasm .wasm
+AddType application/manifest+json .webmanifest
+AddType application/javascript .js
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.(wasm|js|css)$">
+    Header set Cache-Control "public, max-age=3600"
+  </FilesMatch>
+  <FilesMatch "\.(html|webmanifest)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  <FilesMatch "^(COMMAND\.COM|IO\.SYS|MSDOS\.SYS|.*\.(SYS|COM|EXE|BIN|CPI|PRO))$">
+    Header set Cache-Control "public, max-age=86400"
+    Header set Content-Type "application/octet-stream"
+  </FilesMatch>
+</IfModule>

@@ -1,0 +1,18 @@
+# local planning and notes never ship
+/local-notes/
+
+# build output
+/dist/
+/.cache/
+
+# third-party sources and throwaway build tools fetched by scripts
+/tools/_msdos-src/
+/tools/_dosbox/
+/tests/_cache/
+
+# editor / OS noise
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store

@@ -1,0 +1,11 @@
+{
+  "name": "DOS Mobile",
+  "short_name": "DOS Mobile",
+  "description": "A PC that runs MS-DOS in your browser.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0c0f12",
+  "theme_color": "#101418",
+  "icons": []
+}
