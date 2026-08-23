@@ -499,6 +499,7 @@ export class LocalFatDrive {
 /** Walk a FileSystemDirectoryHandle (FSA picker or OPFS) into LocalEntry[]. */
 export async function entriesFromDirectory(dir: FileSystemDirectoryHandle, onProgress?: (n: number) => void): Promise<LocalEntry[]> {
   const out: LocalEntry[] = [];
+  let unreadable = 0;
   const walk = async (d: FileSystemDirectoryHandle, prefix: string) => {
     const names: { name: string; handle: FileSystemHandle }[] = [];
     const iter = (d as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
@@ -509,18 +510,23 @@ export async function entriesFromDirectory(dir: FileSystemDirectoryHandle, onPro
     names.sort((a, b) => a.name.toUpperCase() < b.name.toUpperCase() ? -1 : 1);
     for (const { name, handle } of names) {
       const path = prefix ? `${prefix}/${name}` : name;
-      if (handle.kind === "directory") await walk(handle as FileSystemDirectoryHandle, path);
-      else {
-        const fh = handle as FileSystemFileHandle;
-        const f = await fh.getFile();
-        out.push({
-          path, size: f.size, mtime: f.lastModified,
-          read: async (off, len) => new Uint8Array(await (await fh.getFile()).slice(off, off + len).arrayBuffer()),
-        });
-        if (out.length % 64 === 0) onProgress?.(out.length);
+      try {
+        if (handle.kind === "directory") await walk(handle as FileSystemDirectoryHandle, path);
+        else {
+          const fh = handle as FileSystemFileHandle;
+          const f = await fh.getFile();
+          out.push({
+            path, size: f.size, mtime: f.lastModified,
+            read: async (off, len) => new Uint8Array(await (await fh.getFile()).slice(off, off + len).arrayBuffer()),
+          });
+          if (out.length % 64 === 0) onProgress?.(out.length);
+        }
+      } catch {
+        unreadable++; // one locked/cloud-only file must not kill the whole mount
       }
     }
   };
   await walk(dir, "");
+  if (unreadable) console.log(`[localdrive] skipped ${unreadable} unreadable file(s)/folder(s)`);
   return out;
 }

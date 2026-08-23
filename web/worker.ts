@@ -313,7 +313,9 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
           const perm = h.queryPermission ? await h.queryPermission.call(lm.handle, { mode: "read" }) : "prompt";
           if (perm === "granted") {
             try { await mountLocal(lm.handle, lm.name ?? "games"); }
-            catch (e) { post({ type: "log", text: "games folder remount failed: " + e }); }
+            catch (e) {
+              post({ type: "error", text: "Games folder remount failed - use Menu → Connect games folder. (" + e + ")" });
+            }
           } else {
             post({ type: "localFolder", state: "needs-permission", name: lm.name ?? "games", handle: lm.handle });
           }
