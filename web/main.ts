@@ -15,6 +15,9 @@ const speedLabel = $("speed-label");
 
 const settings: MachineSettings = { ...DEFAULT_SETTINGS };
 try { const s = localStorage.getItem("dosmobile.settings"); if (s) Object.assign(settings, JSON.parse(s)); } catch { /* ignore */ }
+// The drive size has no UI, so a persisted value is always a stale old default; it must not pin
+// rebuilds below the shipped size (a wiped drive would come back small and imports hit disk full).
+settings.hddSizeMB = DEFAULT_SETTINGS.hddSizeMB;
 const saveSettings = () => { try { localStorage.setItem("dosmobile.settings", JSON.stringify(settings)); } catch { /* ignore */ } };
 
 const worker = new Worker("worker.js", { type: "module" });
