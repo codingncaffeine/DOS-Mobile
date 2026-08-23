@@ -15,6 +15,7 @@ export interface CoreExports {
   core_run_us(us: number): number;
   core_key(scancode: number): void;
   core_key_space(): number;
+  core_mouse(dx: number, dy: number, buttons: number): void;
   core_disk_attach(slot: number, sectors: number, readonly: number): number;
   core_disk_detach(slot: number): void;
   core_fb_ptr(): number;

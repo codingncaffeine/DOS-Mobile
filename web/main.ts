@@ -248,6 +248,74 @@ for (const btn of osk.querySelectorAll<HTMLButtonElement>("button[data-code]")) 
 $("osk-text").onclick = () => proxy.focus();
 $("btn-keyboard").onclick = () => { osk.hidden = !osk.hidden; if (!osk.hidden) proxy.focus(); };
 proxy.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Backspace") { /* handled by the window handler via scancodes */ } });
+/* ---------------- mouse / touch pointer ---------------- */
+let mouseButtons = 0;
+function mouseScale(): number {
+  const rect = canvas.getBoundingClientRect();
+  return rect.width > 0 ? 640 / rect.width : 1;
+}
+canvas.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "mouse") {
+    if (document.pointerLockElement !== canvas) { canvas.requestPointerLock?.(); }
+    mouseButtons |= e.button === 2 ? 2 : e.button === 1 ? 4 : 1;
+    send({ type: "mouse", dx: 0, dy: 0, buttons: mouseButtons });
+    e.preventDefault();
+  } else {
+    touchStart(e);
+  }
+});
+canvas.addEventListener("pointerup", (e) => {
+  if (e.pointerType === "mouse") {
+    mouseButtons &= ~(e.button === 2 ? 2 : e.button === 1 ? 4 : 1);
+    send({ type: "mouse", dx: 0, dy: 0, buttons: mouseButtons });
+    e.preventDefault();
+  } else {
+    touchEnd(e);
+  }
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") {
+    if (document.pointerLockElement === canvas) {
+      const s = mouseScale();
+      send({ type: "mouse", dx: Math.round(e.movementX * s), dy: Math.round(e.movementY * s), buttons: mouseButtons });
+    }
+  } else {
+    touchMove(e);
+  }
+});
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+/* touch: drag = relative move, quick tap = left click, two-finger tap = right click */
+const touches = new Map<number, { x: number; y: number; t: number; moved: boolean }>();
+function touchStart(e: PointerEvent) {
+  canvas.setPointerCapture(e.pointerId);
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
+  e.preventDefault();
+}
+function touchMove(e: PointerEvent) {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  const dx = e.clientX - t.x, dy = e.clientY - t.y;
+  if (Math.abs(dx) + Math.abs(dy) > 1) {
+    t.moved = true;
+    const s = mouseScale() * 1.5;
+    send({ type: "mouse", dx: Math.round(dx * s), dy: Math.round(dy * s), buttons: mouseButtons });
+    t.x = e.clientX; t.y = e.clientY;
+  }
+  e.preventDefault();
+}
+function touchEnd(e: PointerEvent) {
+  const t = touches.get(e.pointerId);
+  touches.delete(e.pointerId);
+  if (!t) return;
+  const quick = performance.now() - t.t < 300 && !t.moved;
+  if (quick) {
+    const btn = touches.size >= 1 ? 2 : 1; /* a second finger still down = right click */
+    send({ type: "mouse", dx: 0, dy: 0, buttons: mouseButtons | btn });
+    setTimeout(() => send({ type: "mouse", dx: 0, dy: 0, buttons: mouseButtons }), 60);
+  }
+  e.preventDefault();
+}
+
 document.addEventListener("visibilitychange", () => { if (document.hidden) send({ type: "flush" }); });
 window.addEventListener("pagehide", () => send({ type: "flush" }));
 

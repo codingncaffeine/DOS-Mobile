@@ -9,6 +9,7 @@
 #include "cmos.h"
 #include "disk.h"
 #include "machine.h"
+#include "mouse.h"
 
 BiosConfig bios_cfg;
 
@@ -97,6 +98,11 @@ static void build_stub(int vec) {
       emit(&p, 0x50); emit(&p, 0xB0); emit(&p, 0x20); emit(&p, 0xE6); emit(&p, 0x20); emit(&p, 0x58);
       emit(&p, 0xCF);
       break;
+    case 0x74: /* PS/2 mouse (IRQ12): HLE may far-call the user handler; EOI both PICs after */
+      emit(&p, 0x0F); emit(&p, 0xFF); emit(&p, 0x74);
+      emit(&p, 0x50); emit(&p, 0xB0); emit(&p, 0x20); emit(&p, 0xE6); emit(&p, 0xA0); emit(&p, 0xE6); emit(&p, 0x20); emit(&p, 0x58);
+      emit(&p, 0xCF);
+      break;
     case 0x70: /* RTC: HLE then EOI both controllers */
       emit(&p, 0x0F); emit(&p, 0xFF); emit(&p, 0x70);
       emit(&p, 0x50); emit(&p, 0xB0); emit(&p, 0x20); emit(&p, 0xE6); emit(&p, 0xA0); emit(&p, 0xE6); emit(&p, 0x20); emit(&p, 0x58);
@@ -114,7 +120,7 @@ static void build_stub(int vec) {
       break;
     case 0x05: case 0x1B: case 0x1C: case 0x4A: /* user hooks: plain IRET */
     case 0x0A: case 0x0B: case 0x0C: case 0x0D: case 0x0E: case 0x0F: /* unused IRQs: EOI + IRET */
-    case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77:
+    case 0x71: case 0x72: case 0x73: case 0x75: case 0x76: case 0x77:
       if ((vec >= 0x0A && vec <= 0x0F) || (vec >= 0x71 && vec <= 0x77)) {
         emit(&p, 0x50); emit(&p, 0xB0); emit(&p, 0x20);
         if (vec >= 0x71) { emit(&p, 0xE6); emit(&p, 0xA0); }
@@ -391,6 +397,7 @@ static void set_video_mode(int mode) {
   bda8w(0x89, (u8)((m == 0x11 || m == 0x12) ? 0x01 : 0x11));
   bda8w(0x8A, 0x08);
   vga_set_mode(mode);
+  mouse_on_mode_change(m, ncols, nrows);
   /* fonts: text modes get 8x16, 200-line graphics 8x8, 350-line 8x14, 480-line 8x16 */
   if (height == 16) { vga_load_font(font8x16, 16, 0, 256, 0); lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF); }
   else if (height == 14) { vga_load_font(rom(BIOS_FONT14_OFF), 14, 0, 256, 0); lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF); }
@@ -1047,6 +1054,7 @@ static u16 equipment_word(void) {
   u16 eq = 0;
   if (bios_cfg.floppies) eq |= 1 | (u16)((bios_cfg.floppies - 1) << 6);
   if (bios_cfg.fpu) eq |= 2;
+  eq |= 4; /* PS/2 mouse port */
   eq |= 2 << 4; /* initial video: 80x25 colour */
   return eq;
 }
@@ -1184,6 +1192,8 @@ void bios_hle(u8 fn) {
     case 0x18: int18(); break;
     case 0x19: int19(); break;
     case 0x1A: int1a(); break;
+    case 0x33: mouse_hle_int33(); break;
+    case 0x74: mouse_hle_irq(); break;
     case 0x70: { io_wr8(0x70, 0x0C); (void)io_rd8(0x71); break; }
     default: break;
   }

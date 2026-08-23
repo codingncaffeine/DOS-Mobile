@@ -9,6 +9,7 @@
 #include "cmos.h"
 #include "disk.h"
 #include "bios.h"
+#include "mouse.h"
 
 EXPORT("core_version") u32 core_version(void) { return 0x000001; }
 
@@ -35,6 +36,7 @@ EXPORT("core_run_us") int core_run_us(u32 us) { return machine_run_ns((s64)us * 
 
 EXPORT("core_key") void core_key(u32 scancode) { kbd_push_scancode((u8)scancode); }
 EXPORT("core_key_space") int core_key_space(void) { return kbd_queue_free(); }
+EXPORT("core_mouse") void core_mouse(int dx, int dy, int buttons) { mouse_host_event(dx, dy, buttons); }
 
 EXPORT("core_disk_attach") int core_disk_attach(int slot, u32 sectors, int readonly) {
   int r = disk_attach(slot, sectors, readonly);

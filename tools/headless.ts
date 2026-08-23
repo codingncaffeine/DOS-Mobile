@@ -99,7 +99,11 @@ for (let ms = 0; ms < totalMs; ms += 10) {
     const codes = textToScancodes(typeText.replace(/\\n/g, "\n"));
     for (const c of codes) core.ex.core_key(c);
   }
-  for (const s of script) if (!s.done && ms >= s.at) { s.done = true; for (const c of textToScancodes(s.text)) core.ex.core_key(c); }
+  for (const s of script) if (!s.done && ms >= s.at) {
+    s.done = true;
+    if (s.text.startsWith("M")) { const [dx, dy, btn] = s.text.slice(1).split(",").map(Number); core.ex.core_mouse(dx, dy, btn); }
+    else for (const c of textToScancodes(s.text)) core.ex.core_key(c);
+  }
   if (pngIndex < pngAt.length && ms >= pngAt[pngIndex]) { dumpPng((pngPath ?? ".cache/shot.png").replace(/\.png$/, `-${pngAt[pngIndex]}.png`)); pngIndex++; }
   const r = core.ex.core_run_us(10_000);
   if (r === 1) { console.log("FATAL at", ms, "ms"); break; }

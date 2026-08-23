@@ -1,6 +1,7 @@
 // Builds the bootable C: drive from the MS-DOS 4.01 file set (dos/ directory) on any sector store.
 import { formatDisk, type DiskPlan } from "./hdd.ts";
 import { FatFs, type SectorIO } from "./fatfs.ts";
+import { buildMouseSys } from "./mousesys.ts";
 
 export const SYSTEM_FILES = ["IO.SYS", "MSDOS.SYS"] as const;
 export const ROOT_FILES = ["COMMAND.COM"] as const;
@@ -11,6 +12,7 @@ export const DEFAULT_CONFIG_SYS = [
   "BUFFERS=20",
   "LASTDRIVE=H",
   "BREAK=ON",
+  "DEVICE=C:\\DOS\\MOUSE.SYS",
   "SHELL=C:\\COMMAND.COM C:\\ /P /E:512",
   "INSTALL=C:\\DOS\\SHARE.EXE",
   "",
@@ -47,6 +49,7 @@ export function buildSystemDisk(io: SectorIO, sizeMB: number, files: Map<string,
   fs.writeFile(0, "CONFIG.SYS", enc(extras?.configSys ?? DEFAULT_CONFIG_SYS));
   fs.writeFile(0, "AUTOEXEC.BAT", enc(extras?.autoexec ?? DEFAULT_AUTOEXEC_BAT));
   const dos = fs.mkdir(0, "DOS", when).cluster;
+  fs.writeFile(dos, "MOUSE.SYS", buildMouseSys(), when);
   const skip = new Set<string>([...SYSTEM_FILES, ...ROOT_FILES, "MSBOOT.BIN", "LICENSE-MSDOS.TXT", "MANIFEST.JSON"]);
   const names = [...files.keys()].filter((n) => !skip.has(n.toUpperCase())).sort();
   for (const n of names) fs.writeFile(dos, n, files.get(n)!, when);

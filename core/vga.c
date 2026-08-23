@@ -2,6 +2,7 @@
 #include "io.h"
 #include "sched.h"
 #include "mem.h"
+#include "mouse.h"
 
 #define FB_MAX_W 1280
 #define FB_MAX_H 1024
@@ -523,6 +524,7 @@ void vga_render_frame(void) {
       preset = 0;
       ma_row += pitch;
     }
+    mouse_overlay(fb, w, h, 1, cw, max_sl);
     if (screen_off) for (u32 i = 0; i < (u32)(w * h); i++) fb[i] = 0xFF000000u;
     return;
   }
@@ -577,6 +579,7 @@ void vga_render_frame(void) {
       if (vga.attr[0x10] & 0x20) pan = 0;
     }
   }
+  mouse_overlay(fb, w, h, 0, 8, 8);
   if (screen_off) for (u32 i = 0; i < (u32)(w * h); i++) fb[i] = 0xFF000000u;
 }
 

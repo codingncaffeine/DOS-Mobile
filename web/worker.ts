@@ -235,6 +235,9 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
       case "key":
         for (const c of m.codes) core.ex.core_key(c);
         break;
+      case "mouse":
+        core.ex.core_mouse(m.dx, m.dy, m.buttons);
+        break;
       case "reset":
         if (!running) { running = true; core.ex.core_reset(m.warm ? 1 : 0); lastWall = performance.now(); schedule(); }
         else core.ex.core_reset(m.warm ? 1 : 0);

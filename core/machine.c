@@ -10,6 +10,7 @@
 #include "vga.h"
 #include "bios.h"
 #include "disk.h"
+#include "mouse.h"
 
 MachineConfig machine_cfg;
 static int reset_pending;
@@ -71,6 +72,7 @@ void machine_reset(int warm) {
   io_register(0x80, 1, rd_misc, wr_misc);
   mem_set_a20(0);
   bios_cfg.hdds = (disks[2].present ? 1 : 0) + (disks[3].present ? 1 : 0);
+  mouse_init();
   cpu_init(machine_cfg.cpu_gen, machine_cfg.fpu);
   bios_init();
   bios_post_reset(warm);
