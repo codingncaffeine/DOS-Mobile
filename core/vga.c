@@ -469,7 +469,12 @@ void vga_render_frame(void) {
   int dot9 = text && !(vga.seq[1] & 1);
   int cw = text ? (dot9 ? 9 : 8) : (c256 ? 4 : 8);
   int w = chars * cw;
-  int h = text ? vis : vis / dsc;
+  /* graphics: a memory row is repeated for max_sl scanlines (twice that with double scan) unless the
+   * CGA-compatibility address bits turn the repeats into distinct banks */
+  int banks = (!(vga.crtc[0x17] & 1) ? 2 : 1) * (!(vga.crtc[0x17] & 2) ? 2 : 1);
+  int repeat = max_sl * dsc / banks;
+  if (repeat < 1) repeat = 1;
+  int h = text ? vis : vis / repeat;
   if (w > FB_MAX_W) w = FB_MAX_W;
   if (h > FB_MAX_H) h = FB_MAX_H;
   if (w < 8 || h < 1) { vga.fb_w = 0; vga.fb_h = 0; return; }
@@ -563,9 +568,11 @@ void vga_render_frame(void) {
       }
     }
     /* advance the row scan counter / memory row */
-    scan += dsc;
-    if (++rsc >= max_sl) { rsc = 0; ma_row += pitch; }
-    if (line_compare < vis && scan > line_compare && scan - dsc <= line_compare) {
+    /* each output row stands for `repeat` scanlines */
+    scan += repeat;
+    rsc += repeat / dsc > 0 ? repeat / dsc : 1;
+    if (rsc >= max_sl) { rsc = 0; ma_row += pitch; }
+    if (line_compare < vis && scan > line_compare && scan - repeat <= line_compare) {
       ma_row = 0; rsc = 0;
       if (vga.attr[0x10] & 0x20) pan = 0;
     }
