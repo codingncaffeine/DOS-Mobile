@@ -65,7 +65,9 @@ int disk_read(int slot, u32 lba, u32 count, u32 phys) {
   if (lba + count > d->sectors || count == 0) return 0x04;
   while (count) {
     u32 n = count > 128 ? 128 : count;
-    if (host_disk_read(slot, lba, n, bounce) != 0) return 0x04;
+    int r = host_disk_read(slot, lba, n, bounce);
+    if (r == 2) return DISK_ST_PENDING; /* async source still loading; caller retries */
+    if (r != 0) return 0x04;
     lin_copy_in(phys, bounce, n * 512);
     lba += n;
     phys += n * 512;

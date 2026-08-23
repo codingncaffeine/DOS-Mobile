@@ -23,7 +23,9 @@ export type ToWorker =
   | { type: "importFiles"; name: string; files: { path: string; bytes: ArrayBuffer }[] }
   | { type: "importZip"; name: string; bytes: ArrayBuffer }
   | { type: "exportDisk" }
-  | { type: "wipeDisk" };
+  | { type: "wipeDisk" }
+  | { type: "connectLocalFolder"; handle: FileSystemDirectoryHandle; name: string }
+  | { type: "disconnectLocalFolder" };
 
 export type FromWorker =
   | { type: "ready"; fbW: number; fbH: number }
@@ -36,4 +38,5 @@ export type FromWorker =
   | { type: "disk"; bytes: ArrayBuffer }
   | { type: "audio"; buf: ArrayBuffer; frames: number }
   | { type: "wiped" }
+  | { type: "localFolder"; state: "mounted" | "needs-permission" | "none"; name?: string; handle?: FileSystemDirectoryHandle }
   | { type: "error"; text: string };

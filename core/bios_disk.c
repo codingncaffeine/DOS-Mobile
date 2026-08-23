@@ -66,6 +66,12 @@ void int13(void) {
       if (fn == 0x02) st = disk_read(slot, lba, count, phys);
       else if (fn == 0x03) st = disk_write(slot, lba, count, phys);
       else st = (lba + count <= d->sectors) ? 0 : 0x04;
+      if (st == DISK_ST_PENDING) { /* async sectors in flight: rerun this INT 13h after a wake */
+        cpu.eip = cpu.eip_start;
+        cpu.eflags |= F_IF;
+        cpu.halted = 1;
+        return;
+      }
       if (st == 0) reg8_set(0, (u8)count);
       done(slot, (u8)st);
       return;
@@ -152,6 +158,12 @@ void int13(void) {
       u32 lba_hi = lin_rd32(pkt + 12);
       if (lba_hi || count > 127) { done(slot, 0x01); return; }
       int st = fn == 0x42 ? disk_read(slot, lba, count, (seg << 4) + off) : disk_write(slot, lba, count, (seg << 4) + off);
+      if (st == DISK_ST_PENDING) { /* async sectors in flight: rerun this INT 13h after a wake */
+        cpu.eip = cpu.eip_start;
+        cpu.eflags |= F_IF;
+        cpu.halted = 1;
+        return;
+      }
       if (st) lin_wr16(pkt + 2, 0);
       done(slot, (u8)st);
       return;

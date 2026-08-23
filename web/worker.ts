@@ -6,6 +6,7 @@ import { ChunkStore, SparseImage } from "./store.ts";
 import { buildSystemDisk } from "./sysdisk.ts";
 import { planDisk } from "./hdd.ts";
 import { FatFs, type SectorIO } from "./fatfs.ts";
+import { entriesFromDirectory, LocalFatDrive } from "./localdrive.ts";
 import { readZip } from "./zip.ts";
 import { textToScancodes } from "./core.ts";
 import type { FromWorker, MachineSettings, ToWorker } from "./protocol.ts";
@@ -14,8 +15,15 @@ const post = (m: FromWorker, transfer?: Transferable[]) => (self as unknown as W
 
 class Disks {
   images = new Map<number, SparseImage>();
-  read(slot: number, lba: number, count: number, dst: Uint8Array) { return this.images.get(slot)?.read(lba, count, dst) ?? false; }
-  write(slot: number, lba: number, count: number, src: Uint8Array) { return this.images.get(slot)?.write(lba, count, src) ?? false; }
+  local?: LocalFatDrive; // slot 3: the mounted games folder
+  read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number {
+    if (slot === 3) return this.local ? this.local.read(lba, count, dst) : false;
+    return this.images.get(slot)?.read(lba, count, dst) ?? false;
+  }
+  write(slot: number, lba: number, count: number, src: Uint8Array) {
+    if (slot === 3) return this.local ? this.local.write(lba, count, src) : false;
+    return this.images.get(slot)?.write(lba, count, src) ?? false;
+  }
 }
 
 const disks = new Disks();
@@ -98,6 +106,36 @@ function promptVisible(): boolean {
   return false;
 }
 const HDD_ID = "hdd0";
+const LOCAL_META = "localdir";
+let localOverlayId = "";
+
+/** Build the synthetic FAT view of a games folder and attach it as the second hard disk (D:). */
+async function mountLocal(handle: FileSystemDirectoryHandle, name: string) {
+  post({ type: "progress", text: "Scanning games folder" });
+  const entries = await entriesFromDirectory(handle, (n) => post({ type: "progress", text: `Scanning games folder (${n} files)` }));
+  const drive = new LocalFatDrive((s) => post({ type: "log", text: s })).build(entries);
+  const prev = await store.getMeta(LOCAL_META);
+  if (prev?.signature && prev.signature !== drive.info.signature) {
+    await store.deleteDisk("lov:" + prev.signature);
+    post({ type: "log", text: "games folder changed since last time; its saved DOS-side writes were reset" });
+  }
+  localOverlayId = "lov:" + drive.info.signature;
+  drive.loadOverlay(await store.loadChunks(localOverlayId));
+  disks.local = drive;
+  await store.putMeta({ id: LOCAL_META, sectors: 0, created: Date.now(), handle, name, signature: drive.info.signature });
+  core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
+  const drop = drive.info.dropped ? `, ${drive.info.dropped} left out (over 2 GB)` : "";
+  post({ type: "log", text: `games folder "${name}" is drive D: (${drive.info.files} files${drop})` });
+  post({ type: "localFolder", state: "mounted", name });
+}
+
+async function unmountLocal() {
+  disks.local = undefined;
+  localOverlayId = "";
+  core.ex.core_disk_detach(3);
+  await store.deleteDisk(LOCAL_META); // the handle + mount info (chunks under this id: none)
+  post({ type: "localFolder", state: "none" });
+}
 
 async function fetchDosFiles(base: string): Promise<Map<string, Uint8Array>> {
   const manifest: { name: string; size: number }[] = await (await fetch(`${base}/manifest.json`)).json();
@@ -133,12 +171,16 @@ async function ensureHdd(dosBase: string, sizeMB: number) {
 
 async function flush() {
   const img = disks.images.get(2);
-  if (!img || img.dirty.size === 0) return;
-  await store.putChunks(HDD_ID, img.takeDirty());
+  if (img && img.dirty.size > 0) await store.putChunks(HDD_ID, img.takeDirty());
+  if (disks.local && localOverlayId) {
+    const dirty = disks.local.takeDirtyOverlay();
+    if (dirty.size > 0) await store.putChunks(localOverlayId, dirty);
+  }
 }
 
 function attachDisks() {
   for (const [slot, img] of disks.images) core.ex.core_disk_attach(slot, img.sectors, 0);
+  if (disks.local) core.ex.core_disk_attach(3, disks.local.info.totalSectors, 0);
 }
 
 function initCore() {
@@ -233,6 +275,17 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         await core.load(m.wasm);
         store = await new ChunkStore().open();
         await ensureHdd(m.dosBase, settings.hddSizeMB);
+        const lm = await store.getMeta(LOCAL_META);
+        if (lm?.handle) {
+          const h = lm.handle as unknown as { queryPermission?(o: { mode: string }): Promise<string> };
+          const perm = h.queryPermission ? await h.queryPermission.call(lm.handle, { mode: "read" }) : "prompt";
+          if (perm === "granted") {
+            try { await mountLocal(lm.handle, lm.name ?? "games"); }
+            catch (e) { post({ type: "log", text: "games folder remount failed: " + e }); }
+          } else {
+            post({ type: "localFolder", state: "needs-permission", name: lm.name ?? "games", handle: lm.handle });
+          }
+        }
         initCore();
         post({ type: "ready", fbW: core.ex.core_fb_width(), fbH: core.ex.core_fb_height() });
         running = true;
@@ -292,6 +345,28 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         await store.deleteDisk(HDD_ID);
         post({ type: "log", text: "drive C: wiped" });
         post({ type: "wiped" });
+        break;
+      case "connectLocalFolder": {
+        running = false;
+        try {
+          await mountLocal(m.handle, m.name);
+          autoType = { text: "D:\nDIR /W\n", after: Number(core.ex.core_emu_ns()) + 1_500_000_000 };
+        } catch (e) {
+          post({ type: "error", text: "games folder mount failed: " + e });
+        }
+        core.ex.core_reset(0);
+        running = true;
+        lastWall = performance.now();
+        schedule();
+        break;
+      }
+      case "disconnectLocalFolder":
+        running = false;
+        await unmountLocal();
+        core.ex.core_reset(0);
+        running = true;
+        lastWall = performance.now();
+        schedule();
         break;
       case "importFiles":
         await importInto(m.name, m.files.map((f) => ({ path: f.path, bytes: new Uint8Array(f.bytes) })));

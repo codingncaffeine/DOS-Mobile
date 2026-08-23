@@ -52,7 +52,7 @@ function chs(lba: number, heads: number, spt: number): [number, number, number] 
 
 /* CHS fields are absolute disk positions; the LBA field is relative to the table's own base
  * (0 for the MBR, the extended partition start for EBR links, the EBR itself for its volume). */
-function partEntry(buf: Uint8Array, off: number, active: boolean, type: number, absStart: number, relStart: number, sectors: number, heads: number, spt: number) {
+export function partEntry(buf: Uint8Array, off: number, active: boolean, type: number, absStart: number, relStart: number, sectors: number, heads: number, spt: number) {
   buf[off] = active ? 0x80 : 0x00;
   buf.set(chs(absStart, heads, spt), off + 1);
   buf[off + 4] = type;

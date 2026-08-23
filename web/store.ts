@@ -17,7 +17,16 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export interface DiskMeta { id: string; sectors: number; label?: string; created: number; }
+export interface DiskMeta {
+  id: string;
+  sectors: number;
+  label?: string;
+  created: number;
+  /* local games folder ("localdir" meta): the persisted directory handle + last mount info */
+  handle?: FileSystemDirectoryHandle;
+  name?: string;
+  signature?: string;
+}
 
 export class ChunkStore {
   private db!: IDBDatabase;

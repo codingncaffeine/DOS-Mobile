@@ -6,6 +6,8 @@ import { SparseImage } from "../web/store.ts";
 import { buildSystemDisk } from "../web/sysdisk.ts";
 import { planDisk } from "../web/hdd.ts";
 import { FatFs, type SectorIO } from "../web/fatfs.ts";
+import { LocalFatDrive } from "../web/localdrive.ts";
+import { localEntriesFromDir } from "./localdeno.ts";
 import { encodePng } from "./png.ts";
 
 const root = fromFileUrl(new URL("..", import.meta.url));
@@ -15,7 +17,9 @@ const opt = (name: string, def?: string) => { const i = a.indexOf("--" + name); 
 class FileDisks {
   images = new Map<number, Uint8Array>();
   sparse = new Map<number, SparseImage>();
-  read(slot: number, lba: number, count: number, dst: Uint8Array) {
+  local?: LocalFatDrive; // slot 3 = the --local-dir games folder
+  read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number {
+    if (slot === 3) return this.local ? this.local.read(lba, count, dst) : false;
     const sp = this.sparse.get(slot); if (sp) return sp.read(lba, count, dst);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
@@ -24,6 +28,7 @@ class FileDisks {
     return true;
   }
   write(slot: number, lba: number, count: number, src: Uint8Array) {
+    if (slot === 3) return this.local ? this.local.write(lba, count, src) : false;
     const sp = this.sparse.get(slot); if (sp) return sp.write(lba, count, src);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
@@ -75,6 +80,14 @@ const hdd = opt("hdd");
 if (hdd) { const img = await Deno.readFile(hdd); disks.images.set(2, img); core.ex.core_disk_attach(2, img.length / 512, 0); }
 const fd = opt("floppy");
 if (fd) { const img = await Deno.readFile(fd); disks.images.set(0, img); core.ex.core_disk_attach(0, img.length / 512, 0); }
+const localDir = opt("local-dir");
+if (localDir) { /* mount a host directory as the second hard disk (D:), lazily read */
+  const entries = await localEntriesFromDir(localDir);
+  const drive = new LocalFatDrive((s) => console.log("[local] " + s)).build(entries);
+  disks.local = drive;
+  core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
+  console.log(`local dir as D:: ${drive.info.files} files, ${(drive.info.bytes / 1048576).toFixed(1)} MB, sig ${drive.info.signature}`);
+}
 
 const totalMs = Number(opt("ms", "2000"));
 const typeText = opt("type");
@@ -119,6 +132,8 @@ for (let ms = 0; ms < totalMs; ms += 10) {
   if (pngIndex < pngAt.length && ms >= pngAt[pngIndex]) { dumpPng((pngPath ?? ".cache/shot.png").replace(/\.png$/, `-${pngAt[pngIndex]}.png`)); pngIndex++; }
   const r = core.ex.core_run_us(10_000);
   if (r === 1) { console.log("FATAL at", ms, "ms"); break; }
+  // with an async disk attached, let its pending file reads resolve
+  if (localDir) await new Promise((res) => setTimeout(res, 0));
 }
 if (pngPath) dumpPng(pngPath);
 const wall = performance.now() - t0;

@@ -1,7 +1,8 @@
 // Thin typed wrapper around the wasm core. Works in the worker and in Deno (tests/tools).
 
 export interface DiskProvider {
-  read(slot: number, lba: number, count: number, dst: Uint8Array): boolean;
+  /** true/0 = done, false/1 = error, 2 = pending (async source still loading; BIOS retries). */
+  read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number;
   write(slot: number, lba: number, count: number, src: Uint8Array): boolean;
 }
 
@@ -59,8 +60,8 @@ export class Core {
           this.onLog(s);
         },
         host_disk_read: (slot: number, lba: number, count: number, dst: number) => {
-          const ok = this.disks.read(slot, lba >>> 0, count, this.u8.subarray(dst, dst + count * 512));
-          return ok ? 0 : 1;
+          const r = this.disks.read(slot, lba >>> 0, count, this.u8.subarray(dst, dst + count * 512));
+          return typeof r === "number" ? r : r ? 0 : 1;
         },
         host_disk_write: (slot: number, lba: number, count: number, src: number) => {
           const ok = this.disks.write(slot, lba >>> 0, count, this.u8.subarray(src, src + count * 512));

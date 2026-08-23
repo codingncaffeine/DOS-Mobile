@@ -48,6 +48,11 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
     }
     case "log": log(m.text); break;
     case "wiped": location.reload(); break;
+    case "localFolder":
+      localState = { state: m.state, name: m.name, handle: m.handle };
+      updateLocalButton();
+      if (m.state === "mounted") toast(`Games folder "${m.name}" is drive D:`, 5000);
+      break;
     case "audio":
       if (audioNode) audioNode.port.postMessage({ buf: m.buf }, [m.buf]);
       else { audioBacklog.push(m.buf); if (audioBacklog.length > 20) audioBacklog.shift(); }
@@ -135,6 +140,30 @@ speed.oninput = () => {
 };
 $("btn-reset").onclick = () => send({ type: "reset", warm: false });
 $("btn-fullscreen").onclick = () => { document.documentElement.requestFullscreen?.().catch(() => {}); };
+/* Local games folder: mounted read-lazily as drive D:; DOS writes stay in a local overlay. */
+const btnLocal = $("btn-local");
+let localState: { state: "mounted" | "needs-permission" | "none"; name?: string; handle?: FileSystemDirectoryHandle } = { state: "none" };
+if (!("showDirectoryPicker" in self)) btnLocal.hidden = true;
+function updateLocalButton() {
+  if (localState.state === "mounted") btnLocal.textContent = `Disconnect games folder (${localState.name ?? ""})`;
+  else if (localState.state === "needs-permission") btnLocal.textContent = `Reconnect games folder (${localState.name ?? ""})`;
+  else btnLocal.textContent = "Connect games folder…";
+}
+btnLocal.onclick = async () => {
+  try {
+    if (localState.state === "mounted") { send({ type: "disconnectLocalFolder" }); return; }
+    if (localState.state === "needs-permission" && localState.handle) {
+      const h = localState.handle as unknown as { requestPermission?(o: { mode: string }): Promise<string> };
+      const p = h.requestPermission ? await h.requestPermission.call(localState.handle, { mode: "read" }) : "denied";
+      if (p !== "granted") return;
+      send({ type: "connectLocalFolder", handle: localState.handle, name: localState.name ?? "games" });
+      return;
+    }
+    const picker = (self as unknown as { showDirectoryPicker(o?: unknown): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
+    const dir = await picker({ id: "dm-games", mode: "read" });
+    send({ type: "connectLocalFolder", handle: dir, name: dir.name });
+  } catch { /* cancelled */ }
+};
 $("btn-export").onclick = () => send({ type: "exportDisk" });
 $("btn-wipe").onclick = () => {
   if (!confirm("Erase drive C: and rebuild it with a fresh MS-DOS? Everything on it is lost.")) return;

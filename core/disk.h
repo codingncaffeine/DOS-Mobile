@@ -17,10 +17,14 @@ typedef struct {
 #define DISK_SLOTS 4
 extern Disk disks[DISK_SLOTS];
 
+/* disk_read result when the host has the sectors in flight (async source, e.g. the local
+ * folder drive): the BIOS rewinds the INT 13h stub and halts, then retries on the next wake. */
+#define DISK_ST_PENDING (-1)
+
 void disk_init(void);
 int disk_attach(int slot, u32 sectors, int readonly);   /* geometry derived from size */
 void disk_detach(int slot);
 int disk_slot_for_bios(u8 dl);                           /* -1 if no such drive */
-/* returns BIOS status code (0 = ok) */
+/* returns BIOS status code (0 = ok) or DISK_ST_PENDING */
 int disk_read(int slot, u32 lba, u32 count, u32 phys);
 int disk_write(int slot, u32 lba, u32 count, u32 phys);
