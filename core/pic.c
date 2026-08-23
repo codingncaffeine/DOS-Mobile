@@ -67,6 +67,12 @@ u8 pic_ack(void) {
   }
   pics[0].irr &= (u8)~(1 << irq);
   if (!pics[0].auto_eoi) pics[0].isr |= (u8)(1 << irq);
+  { extern int cpu_trace_faults; extern s64 emu_now_ns(void); static u32 an; static s64 lastns;
+    if (UNLIKELY(cpu_trace_faults >= 1) && irq == 0 && ((an++ & 63) == 0)) {
+      s64 now = emu_now_ns();
+      dm_log("IRQ0 ack#%d 64acks=%dms isr=%02x", (int)an, (int)((now - lastns) / 1000000), pics[0].isr);
+      lastns = now;
+    } }
   return (u8)(pics[0].vector_base + irq);
 }
 
@@ -137,3 +143,5 @@ void pic_register_ports(void) {
   io_register(0x20, 2, rd_master, wr_master);
   io_register(0xA0, 2, rd_slave, wr_slave);
 }
+
+u8 pic_debug_imr0(void) { return pics[0].imr; } /* trace instrumentation */

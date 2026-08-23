@@ -17,6 +17,10 @@ const u8 parity_tab[256] = {
 };
 
 static const char *const gen_names[] = {"8088", "8086", "80186", "80286", "80386", "80486", "Pentium", "Pentium II"};
+static int itrace_left; /* one-shot instruction trace armed by the IRQ0 probe at trace>=4 */
+static int itrace_burst; /* consecutive deliveries still to trace */
+static u32 itrace_entry_count; /* executions of the traced program's timer-handler entry */
+extern int cpu_trace_faults;
 const char *cpu_gen_name(int gen) { return gen_names[gen & 7]; }
 
 void cpu_set_generation(int gen) { cpu.gen = (u8)gen; }
@@ -1094,9 +1098,40 @@ u64 cpu_run(u64 target_cycles) {
     if (can_int && (cpu.eflags & F_IF) && pic_has_pending()) {
       u8 vec = pic_ack();
       cpu_hw_interrupt(vec);
+      { extern int cpu_trace_faults; extern s64 emu_now_ns(void); static u32 nreal, npm; static s64 lastns;
+        if (UNLIKELY(cpu_trace_faults >= 4) && vec == 8) {
+          static u32 total;
+          total++;
+          if (total == 1000 || total == 8000) { /* control burst (working) + menu burst (broken) */
+            itrace_burst = 60;
+            dm_log("ITRACE burst armed at irq0 #%d", (int)total);
+          }
+          if (itrace_burst > 0) { itrace_burst--; itrace_left = 250; dm_log("ITRACE tick %d", 60 - itrace_burst); }
+        }
+        if (UNLIKELY(cpu_trace_faults >= 1) && vec == 8) {
+          if (cpu.cr0 & 1) {
+            npm++;
+            static int once;
+            if (!once) { once = 1; dm_log("HWINT8 pm target cs=%x base=%x eip=%x lin=%x", cpu.seg[SEG_CS].sel, cpu.seg[SEG_CS].base, cpu.eip, cpu.seg[SEG_CS].base + cpu.eip); }
+          } else nreal++;
+          s64 now = emu_now_ns();
+          if (now - lastns >= 1000000000LL) {
+            dm_log("HWINT8 rate real=%d pm=%d entries=%d per %dms", (int)nreal, (int)npm, (int)itrace_entry_count, (int)((now - lastns) / 1000000));
+            nreal = npm = 0;
+            itrace_entry_count = 0;
+            lastns = now;
+          }
+        } }
       continue;
     }
     int tf = (cpu.eflags & F_TF) != 0;
+    if (UNLIKELY(cpu_trace_faults >= 4) && cpu.seg[SEG_CS].base + cpu.eip == 0x1F84C4) itrace_entry_count++;
+    if (UNLIKELY(itrace_left > 0)) {
+      itrace_left--;
+      u32 lin = cpu.seg[SEG_CS].base + cpu.eip;
+      dm_log("T %04x:%08x %02x %02x %02x %02x %02x %02x", cpu.seg[SEG_CS].sel, cpu.eip,
+             lin_rd8(lin), lin_rd8(lin + 1), lin_rd8(lin + 2), lin_rd8(lin + 3), lin_rd8(lin + 4), lin_rd8(lin + 5));
+    }
     cpu_step();
     if (UNLIKELY(tf) && !cpu.fault_pending && !cpu.halted && !cpu.in_fault_delivery) cpu_interrupt(1, 0, 0, 0, cpu.eip);
   }

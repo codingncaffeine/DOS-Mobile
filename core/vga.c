@@ -171,6 +171,14 @@ void vga_mem_wr(u32 addr, u8 v) {
   if (!window_offset(addr, &a)) return;
   u8 memmode = vga.seq[4];
   u8 mask = vga.seq[2] & 0xF;
+  { /* trace: sample unchained writes to pin down a game's mode-X addressing */
+    extern int cpu_trace_faults;
+    static int wrn;
+    if (UNLIKELY(cpu_trace_faults >= 2) && !(memmode & 8) && (memmode & 4) && wrn < 48) {
+      dm_log("VGAWR a=%x mask=%x gc5=%02x gc8=%02x v=%02x", a, mask, vga.gc[5], vga.gc[8], v);
+      wrn++;
+    }
+  }
   u32 off;
   if (memmode & 8) {
     off = a & 0xFFFC;
@@ -269,6 +277,10 @@ static void wr_3cx(u16 port, u8 v) {
     case 0x3C7: vga.dac_read_idx = v; vga.dac_sub = 0; vga.dac_state = 3; break;
     case 0x3C8: vga.dac_write_idx = v; vga.dac_sub = 0; vga.dac_state = 0; break;
     case 0x3C9:
+      { extern int cpu_trace_faults; static u32 dn;
+        if (UNLIKELY(cpu_trace_faults >= 1) && ((dn++ & 0x1FF) == 0)) {
+          dm_log("DAC wr#%d idx=%d v=%d", (int)dn, vga.dac_write_idx, v);
+        } }
       vga.dac[vga.dac_write_idx][vga.dac_sub] = v & 63;
       if (++vga.dac_sub == 3) { dac_update(vga.dac_write_idx); vga.dac_sub = 0; vga.dac_write_idx++; }
       break;
@@ -291,6 +303,11 @@ static u8 rd_crtc(u16 port) {
       s64 t = (emu_now_ns() - vga.frame_start_ns) % vga.line_ns;
       if (t > (vga.line_ns * 4) / 5) s |= 0x01; /* horizontal blanking */
     }
+    { extern int cpu_trace_faults; static u32 rn, setn;
+      if (UNLIKELY(cpu_trace_faults >= 1)) {
+        if (s & 8) setn++;
+        if (((++rn) & 0xFFF) == 0) dm_log("3DA reads#%d vset=%d line=%d", (int)rn, (int)setn, line);
+      } }
     return s;
   }
   if (port == 0x3D9) return vga.cga_color;
@@ -486,6 +503,28 @@ void vga_render_frame(void) {
   int blink_on = (vga.frame_count / 16) & 1;
   int cursor_on = (vga.frame_count / 8) & 1;
   int screen_off = (vga.seq[1] & 0x20) || !(vga.attr_pas);
+  { /* trace: log every derived-display transition (games program the CRTC directly) */
+    extern int cpu_trace_faults;
+    static int lw, lh, lt, lo, lc;
+    if (cpu_trace_faults >= 1 && (w != lw || h != lh || text != lt || screen_off != lo || c256 != lc)) {
+      dm_log("VGA %dx%d %s c256=%d%s seq1=%02x gc5=%02x crtc17=%02x pas=%d dsc=%d maxsl=%d",
+             w, h, text ? "text" : "gfx", c256, screen_off ? " BLANKED" : "",
+             vga.seq[1], vga.gc[5], vga.crtc[0x17], vga.attr_pas, dsc, max_sl);
+      lw = w; lh = h; lt = text; lo = screen_off; lc = c256;
+    }
+    if (cpu_trace_faults >= 1 && vga.frame_count % 70 == 0) {
+      u32 dacsum = 0;
+      for (int i = 0; i < 256; i++) dacsum += (vga.dac_rgb[i] & 0xFF) + ((vga.dac_rgb[i] >> 8) & 0xFF) + ((vga.dac_rgb[i] >> 16) & 0xFF);
+      u32 q[4] = {0, 0, 0, 0};
+      for (int i = 0; i < 65536; i++) if (vga.plane[0][i]) q[i >> 14]++;
+      extern u32 core_reg(int i);
+      extern int core_halted(void);
+      extern u8 *ram;
+      u32 bda_tick = (u32)ram[0x46C] | ((u32)ram[0x46D] << 8) | ((u32)ram[0x46E] << 16);
+      dm_log("VGA probe start=%x seq4=%02x dacsum=%d eip=%x bda_tick=%d total=%d vis=%d",
+             start, vga.seq[4], dacsum, core_reg(8), (int)bda_tick, vga.total_lines, vga.visible_lines);
+    }
+  }
 
   if (text) {
     int rows = vis / max_sl;

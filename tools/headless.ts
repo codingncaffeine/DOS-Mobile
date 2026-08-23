@@ -127,7 +127,9 @@ for (let ms = 0; ms < totalMs; ms += 10) {
   for (const s of script) if (!s.done && ms >= s.at) {
     s.done = true;
     if (s.text.startsWith("M")) { const [dx, dy, btn] = s.text.slice(1).split(",").map(Number); core.ex.core_mouse(dx, dy, btn); }
-    else for (const c of textToScancodes(s.text)) core.ex.core_key(c);
+    else if (s.text.startsWith("K")) { /* raw scancodes, hex, e.g. KE0,50,E0,D0 (gray down press+release) */
+      for (const h of s.text.slice(1).split(",")) core.ex.core_key(parseInt(h, 16));
+    } else for (const c of textToScancodes(s.text)) core.ex.core_key(c);
   }
   if (pngIndex < pngAt.length && ms >= pngAt[pngIndex]) { dumpPng((pngPath ?? ".cache/shot.png").replace(/\.png$/, `-${pngAt[pngIndex]}.png`)); pngIndex++; }
   const r = core.ex.core_run_us(10_000);
@@ -144,6 +146,17 @@ console.log("--- regs ---", JSON.stringify(core.regs()));
 const insns = Number(core.ex.core_insns());
 console.log(`insns=${insns} emu=${Number(core.ex.core_emu_ns()) / 1e6} ms wall=${wall.toFixed(0)} ms  ~${(insns / wall / 1000).toFixed(1)} MIPS host`);
 if (opt("save")) { const sp = disks.sparse.get(2); await Deno.writeFile(opt("save")!, sp ? sp.toBytes() : disks.images.get(2)!); console.log("saved", opt("save")); }
+for (const spec of (opt("dump") ?? "").split(";").filter(Boolean)) { /* --dump hexaddr,len[;...] guest linear memory */
+  const [a, n] = spec.split(",").map((x) => parseInt(x, 16));
+  const base = core.ex.core_mem_ptr();
+  const bytes = core.u8.subarray(base + a, base + a + n);
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    if (i % 16 === 0) out += (i ? "\n" : "") + (a + i).toString(16).padStart(6, "0") + ": ";
+    out += bytes[i].toString(16).padStart(2, "0") + " ";
+  }
+  console.log(`dump ${spec}:\n` + out);
+}
 if (wavPath) {
   let total = 0;
   for (const c of wavChunks) total += c.length;

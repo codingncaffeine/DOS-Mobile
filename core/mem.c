@@ -61,6 +61,11 @@ void mem_wr16(u32 a, u16 v) {
 
 void mem_wr32(u32 a, u32 v) {
   a &= a20_mask;
+  { /* trace>=3: sample write destinations to find where a program blits its frames */
+    extern int cpu_trace_faults;
+    static u32 wrsample;
+    if (UNLIKELY(cpu_trace_faults >= 3) && ((++wrsample) & 0x3FFF) == 0) dm_log("WR32 %x", a);
+  }
   if (LIKELY(a + 3 < ram_size && (a + 3 < 0xA0000 || a >= 0x100000))) { st32(ram + a, v); return; }
   mem_wr8(a, (u8)v);
   mem_wr8(a + 1, (u8)(v >> 8));

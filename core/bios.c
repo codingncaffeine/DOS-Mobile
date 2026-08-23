@@ -734,7 +734,8 @@ static void int10(void) {
       if (AL == 0) { SET_BX(1); SET_AL(0x1C); }
       else SET_AL(0x1C);
       break;
-    case 0x4F: SET_AX(0x014F); break; /* VESA: not yet */
+    case 0x4F: SET_AX(0x0100); break; /* VESA: absent — AL must NOT echo 4Fh or loose
+      detection (check AL only) believes VBE exists and blits into a bogus framebuffer */
     case 0xFE: case 0xFF: break;
     default: break;
   }
@@ -926,6 +927,12 @@ static void int16(void) {
 
 /* ---------------- timer / clock ---------------- */
 static void int08(void) {
+  { extern int cpu_trace_faults; extern s64 emu_now_ns(void); static u32 n; static s64 lastns;
+    if (UNLIKELY(cpu_trace_faults >= 1)) {
+      n++;
+      s64 now = emu_now_ns();
+      if (now - lastns >= 2000000000LL) { dm_log("BIOS int08 rate=%d per 2s", (int)n); n = 0; lastns = now; }
+    } }
   u32 ticks = bda32(0x6C) + 1;
   if (ticks >= 0x1800B0) { ticks = 0; bda8w(0x70, 1); }
   bda32w(0x6C, ticks);

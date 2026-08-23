@@ -49,6 +49,10 @@ static void schedule_irq0(void) {
 
 static void ch0_event(void) {
   PitChan *c = &ch[0];
+  { extern int cpu_trace_faults; extern u8 pic_debug_imr0(void); static u32 n;
+    if (UNLIKELY(cpu_trace_faults >= 1) && ((n++ & 0x3FF) == 0)) {
+      dm_log("PIT fire#%d mode=%d reload=%d imr=%02x", (int)n, c->mode, c->reload, pic_debug_imr0());
+    } }
   pic_raise_irq(0);
   c->out = 1;
   if (c->mode == 2 || c->mode == 3) schedule_irq0();
@@ -88,6 +92,8 @@ int pit_speaker_output(void) { return (port61 & 3) == 3 && chan_output(&ch[2]); 
 u32 pit_ch2_reload(void) { return period(&ch[2]); }
 
 static void pit_write_count(PitChan *c, u16 v) {
+  { extern int cpu_trace_faults; static int n;
+    if (UNLIKELY(cpu_trace_faults >= 1) && c == &ch[0] && n < 80) { dm_log("PIT ch0 load mode=%d count=%d", c->mode, v); n++; } }
   c->reload = v;
   c->loaded = 1;
   c->load_tick = pit_now();
@@ -108,6 +114,12 @@ static void wr_pit(u16 port, u8 v) {
     PitChan *c = &ch[sel];
     int access = (v >> 4) & 3;
     if (access == 0) { /* latch */
+      { extern int cpu_trace_faults; extern s64 emu_now_ns(void); static u32 ln; static s64 lt;
+        if (UNLIKELY(cpu_trace_faults >= 1) && sel == 0 && ((ln++ & 0x7FF) == 0)) {
+          s64 now = emu_now_ns();
+          dm_log("PIT latch#%d val=%d 2048dt=%dms", (int)ln, current_count(c), (int)((now - lt) / 1000000));
+          lt = now;
+        } }
       if (!c->latched) { c->latch = current_count(c); c->latched = 1; }
       return;
     }
