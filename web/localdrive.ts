@@ -1,17 +1,18 @@
-// Local game drive: a host folder exposed to DOS as the second hard disk (BIOS 81h).
-// The disk is synthetic: an 8 GB (CHS ceiling) drive carved into 2 GB FAT16 volumes exactly like
-// the built-in C: image (formatDisk does the MBR/EBR/BPB plumbing). Top-level items of the folder
-// are placed WHOLE onto volumes, first-fit in alphabetical order — a game is never split, so it
-// either runs or is reported. Top-level archive files (.zip/.iso/...) are skipped: DOS cannot run
-// them and they would eat the letter space. Volume 1 carries a generated README.TXT that maps
-// every item to its volume and lists what did not fit.
-// Metadata (boot records, FATs, directories) lives in a sparse image; file DATA clusters map onto
+// Local game drive: a host folder exposed to DOS across MULTIPLE synthetic hard disks.
+// MS-DOS 4.01's real limits (verified in the source we build): primaries exist only on the first
+// two BIOS disks, but DoMini walks the extended partition chain of EVERY disk, with room for 23
+// logical drives - so disk 81h carries a primary (D:) plus logicals, and disks 82h+ carry only
+// extended partitions. With LASTDRIVE=Z that fills the alphabet: up to ~40 GB of mounted games.
+// Top-level items are placed WHOLE, first-fit alphabetically - a game is never split, so it
+// either runs or is reported. Top-level archive files (.zip/.iso/...) are skipped: DOS cannot
+// run them. Volume 1 carries a generated README.TXT mapping every item to its drive letter.
+// Metadata (boot records, FATs, directories) lives in sparse images; file DATA clusters map onto
 // the real files and are fetched lazily in 64 KB blocks (read-ahead + LRU). A read that is not
-// resident yet returns "pending" (2) — the BIOS rewinds INT 13h and halts until it arrives.
-// DOS writes land in a persistent per-folder sector overlay; the real folder is never modified.
+// resident yet returns "pending" (2) - the BIOS rewinds INT 13h and halts until it arrives.
+// DOS writes land in persistent per-folder sector overlays; the real folder is never modified.
 // Works over the File System Access API in the browser and over Deno files in the test rigs.
 import { fatDateTime, planVolume, shortName, type VolumeGeometry } from "./fat.ts";
-import { formatDisk, MAX_VOLUME_MB, planDisk } from "./hdd.ts";
+import { formatDisk, formatDiskExt, MAX_VOLUME_MB, planDisk, planDiskExt } from "./hdd.ts";
 import { SparseImage } from "./store.ts";
 import type { SectorIO } from "./fatfs.ts";
 
@@ -31,19 +32,22 @@ export interface LocalEntry {
 }
 
 export interface LocalDriveOptions {
-  diskMB?: number;      // synthetic disk size (default 8 GB, the CHS ceiling)
-  volumeMB?: number;    // per-volume cap (default 2047, the FAT16 ceiling)
+  diskMB?: number;        // per-disk size (default 8 GB, the CHS ceiling)
+  volumeMB?: number;      // per-volume cap (default 2047, the FAT16 ceiling)
+  maxDisks?: number;      // synthetic disks (default 5 → with the 8 GB C: exactly fills C..Z)
+  imagePrimaries?: number; // built-in image primary count (for drive-letter prediction)
+  imageLogicals?: number;  // built-in image logical count (for drive-letter prediction)
 }
 
 export interface LocalDriveInfo {
-  files: number;                    // files placed
-  bytes: number;                    // bytes placed
+  files: number;
+  bytes: number;
   signature: string;
-  totalSectors: number;
-  volumes: { items: string[] }[];   // top-level item names per volume
+  disks: number;                              // synthetic disks in use
+  volumes: { disk: number; letter: string; items: string[] }[];
   skippedArchives: number;
-  tooBig: string[];                 // items larger than one volume
-  notFit: string[];                 // items that ran out of space
+  tooBig: string[];
+  notFit: string[];
 }
 
 function fnv(s: string): string {
@@ -53,34 +57,41 @@ function fnv(s: string): string {
 }
 
 interface DirNode {
-  path: string;                    // "" = the volume root
+  path: string;
   subdirs: string[];
-  files: number[];                 // entry indices
+  files: number[];
   cluster: number;
   clusters: number;
   buf?: Uint8Array;
   taken: Set<string>;
 }
 
-interface Interval { s0: number; s1: number; idx: number; } // [s0, s1) absolute LBA of file data
+interface Interval { s0: number; s1: number; idx: number; } // [s0, s1) disk-relative LBA
 
 interface Volume {
+  disk: number;
   startLba: number;
   sectors: number;
+  logical: boolean;
   geo: VolumeGeometry;
-  nextFree: number;                // next free cluster
+  nextFree: number;
   rootUsed: number;
-  itemNames: string[];             // display names of top-level items placed here
-  entryIdx: number[];              // entries placed on this volume
+  letter: string;
+  itemNames: string[];
+  entryIdx: number[];
+}
+
+interface DiskState {
+  meta: SparseImage;
+  intervals: Interval[];
+  overlay: Map<number, Uint8Array>;
+  overlayDirty: Set<number>;
 }
 
 export class LocalFatDrive {
-  meta!: SparseImage;
   info!: LocalDriveInfo;
+  private disksArr: DiskState[] = [];
   private entries: LocalEntry[] = [];
-  private intervals: Interval[] = [];
-  private overlay = new Map<number, Uint8Array>();
-  private overlayDirty = new Set<number>();
   private cache = new Map<string, Uint8Array>();
   private pendingBlocks = new Set<string>();
   private errorBlocks = new Set<string>();
@@ -88,14 +99,19 @@ export class LocalFatDrive {
 
   constructor(log?: (s: string) => void) { this.log = log ?? (() => {}); }
 
-  /** Deterministic layout: same folder contents → same volumes → the overlay stays valid. */
+  diskSectors(d: number): number { return this.disksArr[d]?.meta.sectors ?? 0; }
+
+  /** Deterministic layout: same folder contents → same volumes → the overlays stay valid. */
   build(all: LocalEntry[], opts?: LocalDriveOptions): this {
     const diskMB = opts?.diskMB ?? 8192;
     const volMB = opts?.volumeMB ?? MAX_VOLUME_MB;
+    const maxDisks = opts?.maxDisks ?? 4;
+    const imagePrimaries = opts?.imagePrimaries ?? 1;
+    const imageLogicals = opts?.imageLogicals ?? 3;
     const sorted = [...all].sort((a, b) => a.path.toUpperCase() < b.path.toUpperCase() ? -1 : 1);
-    const sig = fnv("layout2|" + sorted.map((e) => `${e.path}|${e.size}|${e.mtime}`).join("\n"));
+    const sig = fnv("layout3|" + sorted.map((e) => `${e.path}|${e.size}|${e.mtime}`).join("\n"));
 
-    // top-level archives are unusable in DOS — skip them before anything is placed
+    // top-level archives are unusable in DOS - skip them before anything is placed
     let skippedArchives = 0;
     const usable: LocalEntry[] = [];
     for (const e of sorted) {
@@ -114,27 +130,43 @@ export class LocalFatDrive {
       it.bytes += e.size;
     });
 
-    // disk skeleton: MBR + EBR chain + per-volume BPB/FATs/roots, all into the sparse image
-    const plan = planDisk(diskMB, volMB);
-    const img = this.meta = new SparseImage(plan.totalSectors);
-    const io: SectorIO = {
-      readSectors: (l, c, d) => img.read(l, c, d),
-      writeSectors: (l, c, s) => img.write(l, c, s),
+    // plan every disk's volumes up front (all sparse - only used disks are kept)
+    const zeroBoot = new Uint8Array(SECTOR);
+    const plans = Array.from({ length: maxDisks }, (_, d) => d === 0 ? planDisk(diskMB, volMB) : planDiskExt(diskMB, volMB));
+    const vols: Volume[] = [];
+    for (let d = 0; d < maxDisks; d++) {
+      for (const v of plans[d].volumes) {
+        vols.push({
+          disk: d, startLba: v.startLba, sectors: v.sectors, logical: v.logical,
+          geo: planVolume(v.sectors, plans[d].spt, plans[d].heads, v.startLba),
+          nextFree: 2, rootUsed: 1, letter: "",
+          itemNames: [], entryIdx: [],
+        });
+      }
+    }
+    // DOS 4.01 letters (from its source): primaries C and D (first two disks only), then it
+    // reserves ONE letter per remaining physical disk (DRVMAX = floppies + disk count, even
+    // though those disks get no primary), and logical drives follow - image logicals first,
+    // then every local disk's in order. Assign with `disks` physical local disks attached.
+    const assignLetters = (localDisks: number) => {
+      const hnum = imagePrimaries + localDisks;              // physical hard disks total
+      let code = 67 + hnum + imageLogicals;                  // first LOCAL logical letter
+      for (const v of vols) {
+        if (!v.logical) v.letter = String.fromCharCode(67 + imagePrimaries); // our disk-0 primary
+        else if (v.disk < localDisks) v.letter = code > 90 ? "-" : String.fromCharCode(code++);
+        else v.letter = "-";
+      }
     };
-    formatDisk(io, diskMB, LocalFatDrive.zeroBoot, "LOCAL DRIVE", volMB);
+    assignLetters(maxDisks); // worst case: most ghost letters; the final pass can only move down
+    const usableVols = vols.filter((v) => v.letter !== "-");
 
-    const vols: Volume[] = plan.volumes.map((v) => ({
-      startLba: v.startLba, sectors: v.sectors,
-      geo: planVolume(v.sectors, plan.spt, plan.heads, v.startLba),
-      nextFree: 2, rootUsed: 1 /* label */, itemNames: [], entryIdx: [],
-    }));
-    // reserve README.TXT on volume 1: one root slot + 64 KB of clusters at the front
-    const v0cs = vols[0].geo.sectorsPerCluster * SECTOR;
+    // reserve README.TXT on the first volume
+    const v0 = usableVols[0];
+    const v0cs = v0.geo.sectorsPerCluster * SECTOR;
     const readmeClusters = Math.max(1, Math.ceil(65536 / v0cs));
-    vols[0].rootUsed++;
-    vols[0].nextFree += readmeClusters;
+    v0.rootUsed++;
+    v0.nextFree += readmeClusters;
 
-    // exact cluster need of one whole item on a volume with cluster size cs
     const needOf = (it: { idx: number[] }, geo: VolumeGeometry): number => {
       const cs = geo.sectorsPerCluster * SECTOR;
       const dirs = new Map<string, { files: number; subdirs: Set<string> }>();
@@ -160,11 +192,11 @@ export class LocalFatDrive {
     // whole-item first-fit, alphabetical
     const tooBig: string[] = [], notFit: string[] = [];
     for (const it of items.values()) {
-      let placed = false, fitsSomewhereEmpty = false;
-      for (const vol of vols) {
+      let placed = false, fitsAnEmpty = false;
+      for (const vol of usableVols) {
         const capacity = vol.geo.clusters + 2 - vol.nextFree;
         const need = needOf(it, vol.geo);
-        if (need <= vol.geo.clusters - (vol === vols[0] ? readmeClusters : 0)) fitsSomewhereEmpty = true;
+        if (need <= vol.geo.clusters - (vol === v0 ? readmeClusters : 0)) fitsAnEmpty = true;
         if (need <= capacity && vol.rootUsed < Math.min(ROOT_ENTRIES, vol.geo.rootEntries)) {
           vol.nextFree += need;
           vol.rootUsed++;
@@ -174,30 +206,34 @@ export class LocalFatDrive {
           break;
         }
       }
-      if (!placed) (fitsSomewhereEmpty ? notFit : tooBig).push(it.name);
+      if (!placed) (fitsAnEmpty ? notFit : tooBig).push(it.name);
     }
 
-    // README content (original names; volume numbers)
+    // final letters with the disk count actually in use (fewer ghost letters than worst case)
+    let usedDisks = 1;
+    for (const v of usableVols) if (v.itemNames.length) usedDisks = Math.max(usedDisks, v.disk + 1);
+    assignLetters(usedDisks);
+
+    // README content
     const lines: string[] = [
       "DOS MOBILE - LOCAL GAMES FOLDER", "===============================", "",
-      "Your folder is mounted read-only across these volumes.",
-      "Volume 1 is this drive (usually D:). Later volumes take the",
-      "letters after the built-in C: drive's own - with the standard",
-      "8 GB C: that means volume 2=H:, 3=I:, 4=J:.", "",
+      "Your folder is mounted read-only across the drive letters below",
+      "(letters assume the standard built-in C: drive; DOS reserves a",
+      "letter for each extra disk, so some letters in between are unused).", "",
     ];
-    vols.forEach((v, i) => {
-      if (!v.itemNames.length) return;
-      lines.push(`VOLUME ${i + 1}:`);
+    for (const v of usableVols) {
+      if (!v.itemNames.length) continue;
+      lines.push(`DRIVE ${v.letter}:`);
       for (const n of v.itemNames) lines.push(`  ${n}`);
       lines.push("");
-    });
+    }
     if (tooBig.length) {
       lines.push("TOO BIG FOR ONE 2 GB VOLUME (FAT16 limit - cannot be mounted):");
       for (const n of tooBig) lines.push(`  ${n}`);
       lines.push("");
     }
     if (notFit.length) {
-      lines.push("DID NOT FIT (the disk is full - remove or move something to play these):");
+      lines.push("DID NOT FIT (all volumes full - remove or move something to play these):");
       for (const n of notFit) lines.push(`  ${n}`);
       lines.push("");
     }
@@ -209,20 +245,34 @@ export class LocalFatDrive {
     if (readme.length > readmeClusters * v0cs) readme = readme.slice(0, readmeClusters * v0cs - 5) + "\r\n...";
     const readmeBytes = new TextEncoder().encode(readme);
 
-    // build every volume's FATs, root and directory clusters
-    this.intervals = [];
-    vols.forEach((vol, vi) => this.buildVolume(vol, vi === 0 ? { cluster: 2, clusters: readmeClusters, bytes: readmeBytes } : null));
-    this.intervals.sort((a, b) => a.s0 - b.s0);
+    // instantiate the disks that received items (a contiguous prefix by construction)
+    this.disksArr = [];
+    for (let d = 0; d < usedDisks; d++) {
+      const meta = new SparseImage(plans[d].totalSectors);
+      const io: SectorIO = {
+        readSectors: (l, c, dst) => meta.read(l, c, dst),
+        writeSectors: (l, c, src) => meta.write(l, c, src),
+      };
+      if (d === 0) formatDisk(io, diskMB, zeroBoot, "LOCAL DRIVE", volMB);
+      else formatDiskExt(io, diskMB, zeroBoot, "LOCAL DRV", volMB);
+      this.disksArr.push({ meta, intervals: [], overlay: new Map(), overlayDirty: new Set() });
+    }
 
-    const placedFiles = vols.reduce((n, v) => n + v.entryIdx.length, 0);
-    const placedBytes = vols.reduce((n, v) => n + v.entryIdx.reduce((m, i) => m + this.entries[i].size, 0), 0);
+    // build every used volume's FATs, root and directory clusters
+    for (const vol of usableVols) {
+      if (vol.disk >= usedDisks) break;
+      this.buildVolume(vol, vol === v0 ? { cluster: 2, clusters: readmeClusters, bytes: readmeBytes } : null);
+    }
+    for (const ds of this.disksArr) ds.intervals.sort((a, b) => a.s0 - b.s0);
+
+    const placedFiles = usableVols.reduce((n, v) => n + v.entryIdx.length, 0);
+    const placedBytes = usableVols.reduce((n, v) => n + v.entryIdx.reduce((m, i) => m + this.entries[i].size, 0), 0);
     this.info = {
-      files: placedFiles, bytes: placedBytes, signature: sig, totalSectors: plan.totalSectors,
-      volumes: vols.map((v) => ({ items: v.itemNames })),
+      files: placedFiles, bytes: placedBytes, signature: sig, disks: usedDisks,
+      volumes: usableVols.filter((v) => v.itemNames.length).map((v) => ({ disk: v.disk, letter: v.letter, items: v.itemNames })),
       skippedArchives, tooBig, notFit,
     };
-    const volsDesc = vols.filter((v) => v.itemNames.length).map((v, i) => `vol${i + 1}=${v.itemNames.length}`).join(" ");
-    this.log(`local drive: ${placedFiles} files in ${items.size - tooBig.length - notFit.length} items (${volsDesc})`
+    this.log(`local drive: ${placedFiles} files, ${(placedBytes / 1048576).toFixed(0)} MB on ${this.info.volumes.length} volume(s) / ${usedDisks} disk(s)`
       + (skippedArchives ? `; ${skippedArchives} archives skipped` : "")
       + (tooBig.length ? `; ${tooBig.length} over 2 GB` : "")
       + (notFit.length ? `; ${notFit.length} did not fit` : ""));
@@ -231,6 +281,7 @@ export class LocalFatDrive {
 
   /** Fill one volume: FAT chains, root + subdirectory clusters, data intervals. */
   private buildVolume(vol: Volume, readmeFile: { cluster: number; clusters: number; bytes: Uint8Array } | null) {
+    const ds = this.disksArr[vol.disk];
     const g = vol.geo;
     const cs = g.sectorsPerCluster * SECTOR;
     const rootSectors = Math.ceil(g.rootEntries * 32 / SECTOR);
@@ -240,7 +291,6 @@ export class LocalFatDrive {
     const clusterSector = (c: number) => dataStart + (c - 2) * g.sectorsPerCluster;
     const now = Date.now();
 
-    // volume-local directory tree; "" is the volume root, children are this volume's items
     const dirs = new Map<string, DirNode>();
     const node = (path: string): DirNode => {
       let d = dirs.get(path);
@@ -260,7 +310,6 @@ export class LocalFatDrive {
       node(dir).files.push(i);
     }
 
-    // allocation: README first (already reserved), then directories, then file data
     let nextFree = 2 + (readmeFile ? readmeFile.clusters : 0);
     const dirList = [...dirs.values()].sort((a, b) => a.path.toUpperCase() < b.path.toUpperCase() ? -1 : 1);
     for (const d of dirList) {
@@ -276,12 +325,11 @@ export class LocalFatDrive {
       const n = Math.max(1, Math.ceil(e.size / cs));
       firstClusterOf.set(i, nextFree);
       if (e.size > 0) {
-        this.intervals.push({ s0: clusterSector(nextFree), s1: clusterSector(nextFree) + Math.ceil(e.size / SECTOR), idx: i });
+        ds.intervals.push({ s0: clusterSector(nextFree), s1: clusterSector(nextFree) + Math.ceil(e.size / SECTOR), idx: i });
       }
       nextFree += n;
     }
 
-    // FAT (identical copies)
     const fat = new Uint8Array(g.sectorsPerFat * SECTOR);
     const setFat = (c: number, v: number) => { fat[c * 2] = v & 0xFF; fat[c * 2 + 1] = (v >> 8) & 0xFF; };
     setFat(0, 0xFF00 | g.media);
@@ -291,7 +339,6 @@ export class LocalFatDrive {
     for (const d of dirList) if (d.path !== "") chain(d.cluster, d.clusters);
     for (const i of vol.entryIdx) chain(firstClusterOf.get(i)!, Math.max(1, Math.ceil(this.entries[i].size / cs)));
 
-    // directory entries
     const rootBuf = new Uint8Array(rootSectors * SECTOR);
     const writeEntry = (buf: Uint8Array, slot: number, name83: string, attr: number, cluster: number, size: number, mtime: number) => {
       const raw = buf.subarray(slot * 32, slot * 32 + 32);
@@ -339,26 +386,23 @@ export class LocalFatDrive {
       fillDir(d, d.buf, 2);
     }
 
-    // write it all into the metadata image
-    for (let f = 0; f < g.fats; f++) this.meta.write(fatStart + f * g.sectorsPerFat, g.sectorsPerFat, fat);
-    this.meta.write(rootStart, rootSectors, rootBuf);
+    for (let f = 0; f < g.fats; f++) ds.meta.write(fatStart + f * g.sectorsPerFat, g.sectorsPerFat, fat);
+    ds.meta.write(rootStart, rootSectors, rootBuf);
     if (readmeFile) {
       const buf = new Uint8Array(readmeFile.clusters * cs);
       buf.set(readmeFile.bytes.subarray(0, buf.length));
-      this.meta.write(clusterSector(readmeFile.cluster), readmeFile.clusters * g.sectorsPerCluster, buf);
+      ds.meta.write(clusterSector(readmeFile.cluster), readmeFile.clusters * g.sectorsPerCluster, buf);
     }
     for (const d of dirList) {
       if (d.path === "") continue;
-      this.meta.write(clusterSector(d.cluster), d.clusters * g.sectorsPerCluster, d.buf!);
+      ds.meta.write(clusterSector(d.cluster), d.clusters * g.sectorsPerCluster, d.buf!);
     }
   }
 
-  private static zeroBoot = new Uint8Array(SECTOR);
-
-  private findInterval(s: number): Interval | null {
-    let lo = 0, hi = this.intervals.length - 1;
+  private findInterval(ds: DiskState, s: number): Interval | null {
+    let lo = 0, hi = ds.intervals.length - 1;
     while (lo <= hi) {
-      const mid = (lo + hi) >> 1, iv = this.intervals[mid];
+      const mid = (lo + hi) >> 1, iv = ds.intervals[mid];
       if (s < iv.s0) hi = mid - 1;
       else if (s >= iv.s1) lo = mid + 1;
       else return iv;
@@ -388,16 +432,17 @@ export class LocalFatDrive {
   }
 
   /** 0 = done, 1 = I/O error, 2 = pending (retry after the host has loaded the block). */
-  read(lba: number, count: number, dst: Uint8Array): number {
-    if (lba + count > this.meta.sectors) return 1;
+  read(disk: number, lba: number, count: number, dst: Uint8Array): number {
+    const ds = this.disksArr[disk];
+    if (!ds || lba + count > ds.meta.sectors) return 1;
     let pending = false, error = false;
     for (let i = 0; i < count; i++) {
       const s = lba + i;
       const out = dst.subarray(i * SECTOR, (i + 1) * SECTOR);
-      const ov = this.overlay.get(s);
+      const ov = ds.overlay.get(s);
       if (ov) { out.set(ov); continue; }
-      const iv = this.findInterval(s);
-      if (!iv) { this.meta.read(s, 1, out); continue; }
+      const iv = this.findInterval(ds, s);
+      if (!iv) { ds.meta.read(s, 1, out); continue; }
       const e = this.entries[iv.idx];
       const off = (s - iv.s0) * SECTOR;
       const blockIdx = Math.floor(off / BLOCK);
@@ -421,28 +466,33 @@ export class LocalFatDrive {
     return error ? 1 : pending ? 2 : 0;
   }
 
-  write(lba: number, count: number, src: Uint8Array): boolean {
-    if (lba + count > this.meta.sectors) return false;
+  write(disk: number, lba: number, count: number, src: Uint8Array): boolean {
+    const ds = this.disksArr[disk];
+    if (!ds || lba + count > ds.meta.sectors) return false;
     for (let i = 0; i < count; i++) {
       const s = lba + i;
-      let ov = this.overlay.get(s);
-      if (!ov) { ov = new Uint8Array(SECTOR); this.overlay.set(s, ov); }
+      let ov = ds.overlay.get(s);
+      if (!ov) { ov = new Uint8Array(SECTOR); ds.overlay.set(s, ov); }
       ov.set(src.subarray(i * SECTOR, (i + 1) * SECTOR));
-      this.overlayDirty.add(s);
+      ds.overlayDirty.add(s);
     }
     return true;
   }
 
-  /** Dirty overlay sectors for persistence (sector-LBA keyed). */
-  takeDirtyOverlay(): Map<number, Uint8Array> {
+  /** Dirty overlay sectors of one disk for persistence (sector-LBA keyed). */
+  takeDirtyOverlay(disk: number): Map<number, Uint8Array> {
+    const ds = this.disksArr[disk];
     const out = new Map<number, Uint8Array>();
-    for (const s of this.overlayDirty) out.set(s, this.overlay.get(s)!);
-    this.overlayDirty.clear();
+    if (!ds) return out;
+    for (const s of ds.overlayDirty) out.set(s, ds.overlay.get(s)!);
+    ds.overlayDirty.clear();
     return out;
   }
 
-  loadOverlay(m: Map<number, Uint8Array>) {
-    for (const [s, b] of m) this.overlay.set(s, b.slice(0, SECTOR));
+  loadOverlay(disk: number, m: Map<number, Uint8Array>) {
+    const ds = this.disksArr[disk];
+    if (!ds) return;
+    for (const [s, b] of m) ds.overlay.set(s, b.slice(0, SECTOR));
   }
 }
 

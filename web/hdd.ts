@@ -132,3 +132,59 @@ export function formatDisk(io: SectorIO, sizeMB: number, bootCode: Uint8Array, l
   io.writeSectors(0, 1, mbr);
   return plan;
 }
+
+/** Plan a disk whose volumes are ALL logical drives in one extended partition (no primary).
+ * MS-DOS 4.01 sets up primaries only for the first two BIOS disks, but walks the extended
+ * chain of EVERY disk - so third and later disks carry their volumes this way. */
+export function planDiskExt(sizeMB: number, maxVolumeMB = MAX_VOLUME_MB): DiskPlan {
+  const heads = sizeMB > 504 ? 255 : 16, spt = 63;
+  const cylSectors = heads * spt;
+  let cyls = Math.floor(sizeMB * 2048 / cylSectors);
+  if (cyls > 1024) cyls = 1024;
+  if (cyls < 3) cyls = 3;
+  const totalSectors = cyls * cylSectors;
+  const volumes: DiskPlan["volumes"] = [];
+  const maxVol = maxVolumeMB * 2048;
+  let start = cylSectors; // cylinder 0 holds only the MBR; the extended partition starts here
+  let remaining = totalSectors - start;
+  while (remaining >= cylSectors * 2) {
+    const ebr = start;
+    const volStart = ebr + spt;
+    const size = Math.min(remaining - spt, Math.floor(maxVol / cylSectors) * cylSectors - spt);
+    if (size < cylSectors) break;
+    volumes.push({ startLba: volStart, sectors: size, logical: true });
+    start = volStart + size;
+    remaining = totalSectors - start;
+  }
+  return { heads, spt, cyls, totalSectors, volumes };
+}
+
+/** Partition + format an extended-only disk (see planDiskExt). */
+export function formatDiskExt(io: SectorIO, sizeMB: number, bootCode: Uint8Array, label = "DOS MOBILE", maxVolumeMB = MAX_VOLUME_MB): DiskPlan {
+  const plan = planDiskExt(sizeMB, maxVolumeMB);
+  const { heads, spt } = plan;
+  const logicals = plan.volumes;
+  if (!logicals.length) throw new Error("disk too small for a logical volume");
+  const extStart = logicals[0].startLba - spt;
+  const extEnd = logicals[logicals.length - 1].startLba + logicals[logicals.length - 1].sectors;
+  const mbr = new Uint8Array(SECTOR);
+  mbr.set(MBR_CODE, 0);
+  partEntry(mbr, 0x1BE, false, 0x05, extStart, extStart, extEnd - extStart, heads, spt);
+  mbr[0x1FE] = 0x55; mbr[0x1FF] = 0xAA;
+  io.writeSectors(0, 1, mbr);
+  for (let i = 0; i < logicals.length; i++) {
+    const v = logicals[i];
+    const ebrLba = v.startLba - spt;
+    const ebr = new Uint8Array(SECTOR);
+    const g = formatVolume(io, v.startLba, v.sectors, spt, heads, bootCode, `${label.slice(0, 9)} ${i}`, 0x30000000 + i);
+    partEntry(ebr, 0x1BE, false, volumeType(g), v.startLba, spt, v.sectors, heads, spt);
+    if (i + 1 < logicals.length) {
+      const next = logicals[i + 1];
+      const nextEbr = next.startLba - spt;
+      partEntry(ebr, 0x1CE, false, 0x05, nextEbr, nextEbr - extStart, next.sectors + spt, heads, spt);
+    }
+    ebr[0x1FE] = 0x55; ebr[0x1FF] = 0xAA;
+    io.writeSectors(ebrLba, 1, ebr);
+  }
+  return plan;
+}

@@ -305,6 +305,10 @@ async function ensureAudio() {
     audioNode = new AudioWorkletNode(audioCtx, "dm-audio", { outputChannelCount: [2] });
     audioNode.connect(audioCtx.destination);
     audioNode.port.postMessage({ rate: 48000 });
+    audioNode.port.onmessage = (e) => { // per-second jitter-buffer telemetry (menu log)
+      const s = (e.data as { stats?: { underruns: number; bufferedMs: number; targetMs: number } }).stats;
+      if (s && s.underruns > 0) log(`audio: ${s.underruns} underrun(s), buffered ${s.bufferedMs.toFixed(0)} ms, target ${s.targetMs.toFixed(0)} ms`);
+    };
     for (const buf of audioBacklog.splice(0)) audioNode.port.postMessage({ buf }, [buf]);
   } catch (e) { log("audio unavailable: " + e); }
 }

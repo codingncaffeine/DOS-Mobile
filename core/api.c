@@ -41,7 +41,8 @@ EXPORT("core_mouse") void core_mouse(int dx, int dy, int buttons) { mouse_host_e
 
 EXPORT("core_disk_attach") int core_disk_attach(int slot, u32 sectors, int readonly) {
   int r = disk_attach(slot, sectors, readonly);
-  bios_cfg.hdds = (disks[2].present ? 1 : 0) + (disks[3].present ? 1 : 0);
+  bios_cfg.hdds = 0; /* BIOS drive numbers are contiguous from 80h */
+  for (int hd = 2; hd < DISK_SLOTS && disks[hd].present; hd++) bios_cfg.hdds++;
   return r;
 }
 EXPORT("core_disk_detach") void core_disk_detach(int slot) { disk_detach(slot); }

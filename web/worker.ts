@@ -15,13 +15,13 @@ const post = (m: FromWorker, transfer?: Transferable[]) => (self as unknown as W
 
 class Disks {
   images = new Map<number, SparseImage>();
-  local?: LocalFatDrive; // slot 3: the mounted games folder
+  local?: LocalFatDrive; // slots 3+: the mounted games folder (one or more synthetic disks)
   read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number {
-    if (slot === 3) return this.local ? this.local.read(lba, count, dst) : false;
+    if (slot >= 3) return this.local ? this.local.read(slot - 3, lba, count, dst) : false;
     return this.images.get(slot)?.read(lba, count, dst) ?? false;
   }
   write(slot: number, lba: number, count: number, src: Uint8Array) {
-    if (slot === 3) return this.local ? this.local.write(lba, count, src) : false;
+    if (slot >= 3) return this.local ? this.local.write(slot - 3, lba, count, src) : false;
     return this.images.get(slot)?.write(lba, count, src) ?? false;
   }
 }
@@ -39,6 +39,7 @@ let backlogUs = 0;
 let cpuBusyMs = 0, windowStart = 0, windowInsns = 0n, windowEmuUs = 0;
 let flushTimer: ReturnType<typeof setInterval> | undefined;
 let resetCount = 0;
+let lastPaintAt = 0;
 let debugText = false;
 let autoType: { text: string; after: number } | null = null;
 let audioPtr = 0;
@@ -110,35 +111,40 @@ const HDD_ID = "hdd0";
 const LOCAL_META = "localdir";
 let localOverlayId = "";
 
-/** Build the synthetic FAT view of a games folder and attach it as the second hard disk (D:). */
+/** Build the synthetic FAT view of a games folder and attach it as hard disks 81h+ (D:, H:, …). */
 async function mountLocal(handle: FileSystemDirectoryHandle, name: string) {
   post({ type: "progress", text: "Scanning games folder" });
   const entries = await entriesFromDirectory(handle, (n) => post({ type: "progress", text: `Scanning games folder (${n} files)` }));
-  const drive = new LocalFatDrive((s) => post({ type: "log", text: s })).build(entries);
+  const imageVols = planDisk(settings.hddSizeMB).volumes.length;
+  const drive = new LocalFatDrive((s) => post({ type: "log", text: s }))
+    .build(entries, { imagePrimaries: 1, imageLogicals: imageVols - 1 });
   const prev = await store.getMeta(LOCAL_META);
   if (prev?.signature && prev.signature !== drive.info.signature) {
-    await store.deleteDisk("lov:" + prev.signature);
+    for (let d = 0; d < 8; d++) await store.deleteDisk(`lov:${prev.signature}:${d}`);
+    await store.deleteDisk("lov:" + prev.signature); // pre-multi-disk overlay id
     post({ type: "log", text: "games folder changed since last time; its saved DOS-side writes were reset" });
   }
   localOverlayId = "lov:" + drive.info.signature;
-  drive.loadOverlay(await store.loadChunks(localOverlayId));
+  for (let d = 0; d < drive.info.disks; d++) drive.loadOverlay(d, await store.loadChunks(`${localOverlayId}:${d}`));
   disks.local = drive;
   await store.putMeta({ id: LOCAL_META, sectors: 0, created: Date.now(), handle, name, signature: drive.info.signature });
-  core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
-  const nVols = drive.info.volumes.filter((v) => v.items.length).length;
+  for (let d = 0; d < drive.info.disks; d++) core.ex.core_disk_attach(3 + d, drive.diskSectors(d), 0);
+  const letters = drive.info.volumes.map((v) => v.letter + ":").join(" ");
   const extras = [
     drive.info.skippedArchives ? `${drive.info.skippedArchives} archives skipped` : "",
     drive.info.tooBig.length ? `${drive.info.tooBig.length} over 2 GB` : "",
     drive.info.notFit.length ? `${drive.info.notFit.length} did not fit` : "",
   ].filter(Boolean).join(", ");
-  post({ type: "log", text: `games folder "${name}" mounted: ${drive.info.files} files on ${nVols} volume(s) starting at D:` + (extras ? ` (${extras}; see D:\\README.TXT)` : " (see D:\\README.TXT)") });
+  post({ type: "log", text: `games folder "${name}" mounted: ${drive.info.files} files on ${letters}` + (extras ? ` (${extras}; see D:\\README.TXT)` : " (see D:\\README.TXT)") });
   post({ type: "localFolder", state: "mounted", name });
 }
 
 async function unmountLocal() {
+  const drive = disks.local;
   disks.local = undefined;
   localOverlayId = "";
-  core.ex.core_disk_detach(3);
+  for (let d = 0; d < 8; d++) core.ex.core_disk_detach(3 + d);
+  if (drive) for (let d = 0; d < drive.info.disks; d++) await store.deleteDisk(`lov:${drive.info.signature}:${d}`);
   await store.deleteDisk(LOCAL_META); // the handle + mount info (chunks under this id: none)
   post({ type: "localFolder", state: "none" });
 }
@@ -192,14 +198,16 @@ async function flush() {
   const img = disks.images.get(2);
   if (img && img.dirty.size > 0) await store.putChunks(HDD_ID, img.takeDirty());
   if (disks.local && localOverlayId) {
-    const dirty = disks.local.takeDirtyOverlay();
-    if (dirty.size > 0) await store.putChunks(localOverlayId, dirty);
+    for (let d = 0; d < disks.local.info.disks; d++) {
+      const dirty = disks.local.takeDirtyOverlay(d);
+      if (dirty.size > 0) await store.putChunks(`${localOverlayId}:${d}`, dirty);
+    }
   }
 }
 
 function attachDisks() {
   for (const [slot, img] of disks.images) core.ex.core_disk_attach(slot, img.sectors, 0);
-  if (disks.local) core.ex.core_disk_attach(3, disks.local.info.totalSectors, 0);
+  if (disks.local) for (let d = 0; d < disks.local.info.disks; d++) core.ex.core_disk_attach(3 + d, disks.local.diskSectors(d), 0);
 }
 
 function initCore() {
@@ -241,13 +249,16 @@ function tick() {
   if (dueUs > 60000) dueUs = 60000;
   const sliceUs = 4000;
   const t0 = performance.now();
+  // Give the core a bigger burst when we are behind: a fixed 12 ms budget plus per-tick
+  // overhead capped utilization below 100% no matter how fast the host is.
+  const budgetMs = backlogUs > 20000 ? 26 : 12;
   let ran = 0;
   while (dueUs - ran >= sliceUs) {
     const r = core.ex.core_run_us(sliceUs);
     ran += sliceUs;
     if (r === 1) { post({ type: "error", text: "The machine stopped (see log)." }); running = false; paint(); return; }
     if (r === 2) { resetCount++; post({ type: "log", text: "machine reset" }); }
-    if (performance.now() - t0 > 12) break; // yield to messages
+    if (performance.now() - t0 > budgetMs) break; // yield to messages
   }
   if (autoType && Number(core.ex.core_emu_ns()) > autoType.after && promptVisible()) {
     for (const c of textToScancodes(autoType.text)) core.ex.core_key(c);
@@ -258,7 +269,8 @@ function tick() {
   const busy = performance.now() - t0;
   cpuBusyMs += busy;
   windowEmuUs += ran;
-  paint();
+  // when struggling to keep up, halve the paint rate rather than the machine's speed
+  if (backlogUs < 30000 || now - lastPaintAt > 28) { paint(); lastPaintAt = now; }
   /* drain audio to the page (s16 stereo) */
   if (!audioPtr) audioPtr = core.ex.core_alloc(AUDIO_CHUNK * 4);
   for (;;) {

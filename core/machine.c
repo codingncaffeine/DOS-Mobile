@@ -79,7 +79,8 @@ void machine_reset(int warm) {
   io_register(0xE9, 1, rd_misc, wr_misc);
   io_register(0x80, 1, rd_misc, wr_misc);
   mem_set_a20(0);
-  bios_cfg.hdds = (disks[2].present ? 1 : 0) + (disks[3].present ? 1 : 0);
+  bios_cfg.hdds = 0; /* BIOS drive numbers must be contiguous from 80h */
+  for (int hd = 2; hd < DISK_SLOTS && disks[hd].present; hd++) bios_cfg.hdds++;
   mouse_init();
   cpu_init(machine_cfg.cpu_gen, machine_cfg.fpu);
   bios_init();

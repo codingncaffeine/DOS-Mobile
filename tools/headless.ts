@@ -17,9 +17,9 @@ const opt = (name: string, def?: string) => { const i = a.indexOf("--" + name); 
 class FileDisks {
   images = new Map<number, Uint8Array>();
   sparse = new Map<number, SparseImage>();
-  local?: LocalFatDrive; // slot 3 = the --local-dir games folder
+  local?: LocalFatDrive; // slots 3+ = the --local-dir games folder disks
   read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number {
-    if (slot === 3) return this.local ? this.local.read(lba, count, dst) : false;
+    if (slot >= 3) return this.local ? this.local.read(slot - 3, lba, count, dst) : false;
     const sp = this.sparse.get(slot); if (sp) return sp.read(lba, count, dst);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
@@ -28,7 +28,7 @@ class FileDisks {
     return true;
   }
   write(slot: number, lba: number, count: number, src: Uint8Array) {
-    if (slot === 3) return this.local ? this.local.write(lba, count, src) : false;
+    if (slot >= 3) return this.local ? this.local.write(slot - 3, lba, count, src) : false;
     const sp = this.sparse.get(slot); if (sp) return sp.write(lba, count, src);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
@@ -81,12 +81,12 @@ if (hdd) { const img = await Deno.readFile(hdd); disks.images.set(2, img); core.
 const fd = opt("floppy");
 if (fd) { const img = await Deno.readFile(fd); disks.images.set(0, img); core.ex.core_disk_attach(0, img.length / 512, 0); }
 const localDir = opt("local-dir");
-if (localDir) { /* mount a host directory as the second hard disk (D:), lazily read */
+if (localDir) { /* mount a host directory as hard disks 81h+ (D:, H:, ...), lazily read */
   const entries = await localEntriesFromDir(localDir);
   const drive = new LocalFatDrive((s) => console.log("[local] " + s)).build(entries);
   disks.local = drive;
-  core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
-  console.log(`local dir as D:: ${drive.info.files} files, ${(drive.info.bytes / 1048576).toFixed(1)} MB, sig ${drive.info.signature}`);
+  for (let d = 0; d < drive.info.disks; d++) core.ex.core_disk_attach(3 + d, drive.diskSectors(d), 0);
+  console.log(`local dir: ${drive.info.files} files, ${(drive.info.bytes / 1048576).toFixed(1)} MB on ${drive.info.volumes.map((v) => v.letter + ":").join(" ")}, sig ${drive.info.signature}`);
 }
 
 const totalMs = Number(opt("ms", "2000"));

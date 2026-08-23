@@ -1148,12 +1148,14 @@ static void post(int warm) {
     bios_puts(disks[i].present ? names[disks[i].type] : "empty");
     bios_puts("\r\n");
   }
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < DISK_SLOTS - 2; i++) {
     if (!disks[2 + i].present) continue;
     u32 mb = disks[2 + i].sectors / 2048;
     char num[16]; int k = 0; u32 v = mb; if (v == 0) num[k++] = '0'; while (v) { num[k++] = (char)('0' + v % 10); v /= 10; }
     int n = 0;
-    const char *s = i == 0 ? "Hard disk C: " : "Hard disk D: ";
+    char label[16] = "Hard disk 1: ";
+    label[10] = (char)('1' + i);
+    const char *s = label;
     while (*s) line[n++] = *s++;
     while (k) line[n++] = num[--k];
     s = " MB\r\n";

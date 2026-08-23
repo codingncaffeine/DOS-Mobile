@@ -43,7 +43,7 @@ typedef struct {
   int fpu;
   int floppies;      /* 0-2 */
   int floppy_type[2];/* 1=360K 2=1.2M 3=720K 4=1.44M 5=2.88M */
-  int hdds;          /* 0-2 */
+  int hdds;          /* 0-8 */
   int video;         /* 0 = VGA (only option in P0) */
 } BiosConfig;
 extern BiosConfig bios_cfg;

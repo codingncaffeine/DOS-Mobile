@@ -54,8 +54,7 @@ void disk_detach(int slot) {
 
 int disk_slot_for_bios(u8 dl) {
   if (dl < 2) return dl;
-  if (dl == 0x80) return 2;
-  if (dl == 0x81) return 3;
+  if (dl >= 0x80 && dl < 0x80 + (DISK_SLOTS - 2)) return 2 + (dl - 0x80);
   return -1;
 }
 

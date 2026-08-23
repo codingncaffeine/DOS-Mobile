@@ -16,15 +16,19 @@ class Disks {
   images = new Map<number, Uint8Array>();
   local?: LocalFatDrive;
   read(slot: number, lba: number, count: number, dst: Uint8Array): boolean | number {
-    if (slot === 3) return this.local ? this.local.read(lba, count, dst) : false;
+    if (slot >= 3) return this.local ? this.local.read(slot - 3, lba, count, dst) : false;
     const img = this.images.get(slot); if (!img || (lba + count) * 512 > img.length) return false;
     dst.set(img.subarray(lba * 512, (lba + count) * 512)); return true;
   }
   write(slot: number, lba: number, count: number, src: Uint8Array) {
-    if (slot === 3) return this.local ? this.local.write(lba, count, src) : false;
+    if (slot >= 3) return this.local ? this.local.write(slot - 3, lba, count, src) : false;
     const img = this.images.get(slot); if (!img || (lba + count) * 512 > img.length) return false;
     img.set(src, lba * 512); return true;
   }
+}
+
+function attachLocal(core: Core, drive: LocalFatDrive) {
+  for (let d = 0; d < drive.info.disks; d++) core.ex.core_disk_attach(3 + d, drive.diskSectors(d), 0);
 }
 
 /** Run emulated time while letting the local drive's async file reads resolve. */
@@ -66,7 +70,7 @@ Deno.test("host directory mounts as D: with lazy reads and DOS copies from it in
     await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
     core.ex.core_init(GEN.G486, 66_000, 4096, 0, 1, 4, 0);
     core.ex.core_disk_attach(2, image.length / 512, 0);
-    core.ex.core_disk_attach(3, disks.local.info.totalSectors, 0);
+    attachLocal(core, disks.local);
 
     await runMs(core, 2500);
     assertStringIncludes(core.textScreen().join("\n"), "C:\\>");
@@ -127,7 +131,7 @@ Deno.test("items spread whole across multiple volumes; archives skipped; README 
     await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
     core.ex.core_init(GEN.G486, 66_000, 4096, 0, 1, 4, 0);
     core.ex.core_disk_attach(2, image.length / 512, 0);
-    core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
+    attachLocal(core, drive);
 
     await runMs(core, 2500);
     assertStringIncludes(core.textScreen().join("\n"), "C:\\>");
@@ -154,6 +158,67 @@ Deno.test("items spread whole across multiple volumes; archives skipped; README 
     const entry = fs.find(0, "Y.BIN");
     assert(entry, "Y.BIN exists on C: (" + logs.join(" | ") + ")");
     assertEquals(fs.readFile(entry!), bins[2], "cross-volume copy is byte-identical");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("items overflow onto a second synthetic disk (extended-only) that DOS enumerates", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "dmlocal3" });
+  const big = (seed: number, n: number) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * seed + (i >> 7)) & 0xFF; return b; };
+  try {
+    for (let g = 1; g <= 7; g++) {
+      await Deno.mkdir(join(dir, `GAME${g}`), { recursive: true });
+      await Deno.writeFile(join(dir, `GAME${g}`, "DATA.BIN"), big(g, 2_500_000));
+      await Deno.writeTextFile(join(dir, `GAME${g}`, "ID.TXT"), `THIS IS GAME ${g}\r\n`);
+    }
+    const files = new Map<string, Uint8Array>();
+    for await (const e of Deno.readDir(join(root, "dos"))) if (e.isFile) files.set(e.name.toUpperCase(), await Deno.readFile(join(root, "dos", e.name)));
+    const image = new Uint8Array(planDisk(32).totalSectors * 512);
+    buildSystemDisk(new ArraySectorIO(image), 32, files);
+
+    const disks = new Disks();
+    disks.images.set(2, image);
+    const logs: string[] = [];
+    // the 32 MB test C: has a single volume, so letters are C, D(primary), E,F,G then H,I,J,K
+    const drive = new LocalFatDrive((s) => logs.push(s)).build(await localEntriesFromDir(dir), {
+      diskMB: 16, volumeMB: 4, maxDisks: 2, imagePrimaries: 1, imageLogicals: 0,
+    });
+    disks.local = drive;
+    assertEquals(drive.info.disks, 2, "two disks used: " + logs.join(" | "));
+    // 3 physical disks (image + 2 local) → DOS reserves E: for the primary-less third disk,
+    // so the logicals run F, G (disk 1) then H, I, J, K (disk 2)
+    const letters = drive.info.volumes.map((v) => v.letter);
+    assertEquals(letters.slice(0, 5), ["D", "F", "G", "H", "I"]);
+    assertEquals(drive.info.volumes[3].disk, 0, "H: is disk 1's last logical");
+    assertEquals(drive.info.volumes[4].disk, 1, "I: lives on the second (extended-only) disk");
+
+    const core = new Core(disks, (s) => logs.push(s));
+    await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
+    core.ex.core_init(GEN.G486, 66_000, 4096, 0, 1, 4, 0);
+    core.ex.core_disk_attach(2, image.length / 512, 0);
+    attachLocal(core, drive);
+
+    await runMs(core, 2500);
+    assertStringIncludes(core.textScreen().join("\n"), "C:\\>");
+
+    for (const c of textToScancodes("I:\nDIR\n")) core.ex.core_key(c);
+    await runMs(core, 2000);
+    const screen = core.textScreen().join("\n");
+    assertStringIncludes(screen, "I:\\>");
+    assertStringIncludes(screen, "GAME5");
+
+    for (const c of textToScancodes("TYPE GAME5\\ID.TXT\n")) core.ex.core_key(c);
+    await runMs(core, 2000);
+    assertStringIncludes(core.textScreen().join("\n"), "THIS IS GAME 5");
+
+    for (const c of textToScancodes("COPY J:\\GAME6\\DATA.BIN C:\\Z.BIN\n")) core.ex.core_key(c);
+    await runMs(core, 20000);
+    assertStringIncludes(core.textScreen().join("\n"), "1 File(s) copied");
+    const fs = new FatFs(new ArraySectorIO(image)).mount();
+    const entry = fs.find(0, "Z.BIN");
+    assert(entry, "Z.BIN exists on C: (" + logs.join(" | ") + ")");
+    assertEquals(fs.readFile(entry!), big(6, 2_500_000), "copy from the second disk is byte-identical");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

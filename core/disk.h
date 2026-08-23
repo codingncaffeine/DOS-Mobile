@@ -13,8 +13,9 @@ typedef struct {
   int changed;  /* floppy change line pending */
 } Disk;
 
-/* slots: 0,1 = A:,B:  2,3 = first/second hard disk */
-#define DISK_SLOTS 4
+/* slots: 0,1 = A:,B:  2..9 = hard disks 80h..87h (DOS 4.01 gives the first two primaries
+ * C:/D: and enumerates the extended partitions of EVERY disk, up to 23 logical drives) */
+#define DISK_SLOTS 10
 extern Disk disks[DISK_SLOTS];
 
 /* disk_read result when the host has the sectors in flight (async source, e.g. the local
