@@ -54,7 +54,11 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
     case "localFolder":
       localState = { state: m.state, name: m.name, handle: m.handle };
       updateLocalButton();
-      if (m.state === "mounted") toast(`Games folder "${m.name}" is drive D:`, 5000);
+      if (m.state === "mounted") toast(`Games folder "${m.name}" mounted as ${m.letters ?? "D:"} — map in D:\\README.TXT`, 9000);
+      else if (m.state === "needs-permission") {
+        toast(`Your games folder "${m.name}" needs one click to reconnect: Menu → Reconnect games folder`, 15000);
+        log(`games folder "${m.name}" is waiting for permission — press "Reconnect games folder" in the menu`);
+      }
       break;
     case "audio":
       if (audioNode) audioNode.port.postMessage({ buf: m.buf }, [m.buf]);

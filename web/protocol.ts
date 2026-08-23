@@ -39,5 +39,5 @@ export type FromWorker =
   | { type: "disk"; bytes: ArrayBuffer }
   | { type: "audio"; buf: ArrayBuffer; frames: number }
   | { type: "wiped" }
-  | { type: "localFolder"; state: "mounted" | "needs-permission" | "none"; name?: string; handle?: FileSystemDirectoryHandle }
+  | { type: "localFolder"; state: "mounted" | "needs-permission" | "none"; name?: string; handle?: FileSystemDirectoryHandle; letters?: string }
   | { type: "error"; text: string };

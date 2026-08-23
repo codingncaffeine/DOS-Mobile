@@ -136,7 +136,7 @@ async function mountLocal(handle: FileSystemDirectoryHandle, name: string) {
     drive.info.notFit.length ? `${drive.info.notFit.length} did not fit` : "",
   ].filter(Boolean).join(", ");
   post({ type: "log", text: `games folder "${name}" mounted: ${drive.info.files} files on ${letters}` + (extras ? ` (${extras}; see D:\\README.TXT)` : " (see D:\\README.TXT)") });
-  post({ type: "localFolder", state: "mounted", name });
+  post({ type: "localFolder", state: "mounted", name, letters });
 }
 
 async function unmountLocal() {
