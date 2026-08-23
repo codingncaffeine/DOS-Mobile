@@ -31,7 +31,7 @@ export type ToWorker =
 export type FromWorker =
   | { type: "ready"; fbW: number; fbH: number }
   | { type: "frame"; w: number; h: number; buf: ArrayBuffer }
-  | { type: "status"; mhz: number; effectiveMhz: number; load: number; halted: boolean; fatal: boolean; mips: number }
+  | { type: "status"; mhz: number; effectiveMhz: number; load: number; halted: boolean; fatal: boolean; mips: number; ratio: number }
   | { type: "log"; text: string }
   | { type: "text"; lines: string[] }
   | { type: "progress"; text: string }

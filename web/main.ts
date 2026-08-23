@@ -41,6 +41,9 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       break;
     }
     case "status": {
+      // pace audio playback to the machine's real speed: a struggling machine then sounds
+      // continuous at slightly lower pitch (like real hardware) instead of stuttering
+      if (audioNode) audioNode.port.postMessage({ ratio: m.ratio });
       const pct = Math.round(m.effectiveMhz / m.mhz * 100);
       statusEl.textContent = `${m.mhz} MHz · ${m.mips.toFixed(0)} MIPS · load ${Math.round(m.load * 100)}%` + (pct < 95 ? ` · running at ${pct}%` : "");
       statusEl.className = m.fatal ? "bad" : pct < 90 ? "warn" : "";

@@ -24,7 +24,10 @@ class DmAudio extends AudioWorkletProcessor {
   constructor() {
     super();
     this.port.onmessage = (e: MessageEvent) => {
-      const d = e.data as { buf?: ArrayBuffer; rate?: number };
+      const d = e.data as { buf?: ArrayBuffer; rate?: number; ratio?: number };
+      if (typeof d.ratio === "number" && d.ratio > 0) {
+        this.targetRatio = Math.min(1.04, Math.max(0.7, d.ratio));
+      }
       if (d.buf) {
         const arr = new Int16Array(d.buf);
         this.queue.push(arr);
@@ -83,7 +86,10 @@ class DmAudio extends AudioWorkletProcessor {
         return true;
       }
     }
-    const step = this.srcRate / sampleRate;
+    // consume at the machine's real production rate (smoothed): a machine at 90% real time
+    // then plays continuously at 90% pitch instead of starving every few hundred ms
+    this.ratio += (this.targetRatio - this.ratio) * 0.05;
+    const step = (this.srcRate * this.ratio) / sampleRate;
     for (let i = 0; i < out[0].length; i++) {
       this.pos += step;
       while (this.pos >= 1 && this.queuedFrames > 0) { this.pos -= 1; this.last = this.pull(); }
@@ -106,6 +112,8 @@ class DmAudio extends AudioWorkletProcessor {
   }
   last: [number, number] = [0, 0];
   started = false;
+  ratio = 1;
+  targetRatio = 1;
 }
 
 registerProcessor("dm-audio", DmAudio);

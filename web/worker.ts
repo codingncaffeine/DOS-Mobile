@@ -286,7 +286,8 @@ function tick() {
     const dInsns = Number(insns - windowInsns);
     const load = cpuBusyMs / wall;
     const effective = settings.mhz * (windowEmuUs / 1000 / wall);
-    post({ type: "status", mhz: settings.mhz, effectiveMhz: effective, load, halted: !!core.ex.core_halted(), fatal: !!core.ex.core_fatal(), mips: dInsns / wall / 1000 });
+    const ratio = windowEmuUs / 1000 / wall; // emulated time per wall time (1 = holding real time)
+    post({ type: "status", mhz: settings.mhz, effectiveMhz: effective, load, halted: !!core.ex.core_halted(), fatal: !!core.ex.core_fatal(), mips: dInsns / wall / 1000, ratio });
     if (debugText) post({ type: "text", lines: core.textScreen() });
     windowStart = now; cpuBusyMs = 0; windowInsns = insns; windowEmuUs = 0;
   }
