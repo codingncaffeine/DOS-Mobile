@@ -43,7 +43,7 @@ async function buildWeb() {
   };
   await bundle("main.ts", "app.js");
   await bundle("worker.ts", "worker.js");
-  for (const f of ["index.html", "app.css", "manifest.webmanifest", "sw.js", ".htaccess"]) {
+  for (const f of ["index.html", "app.css", "manifest.webmanifest", "icon.svg", "sw.js", ".htaccess"]) {
     try { await Deno.copyFile(join(root, "web", f), join(root, "dist", f)); } catch { /* optional */ }
   }
   // DOS files: the in-browser FAT builder fetches them by manifest

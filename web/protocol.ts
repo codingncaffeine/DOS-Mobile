@@ -19,7 +19,8 @@ export type ToWorker =
   | { type: "flush" }
   | { type: "attachFloppy"; bytes: ArrayBuffer; name: string }
   | { type: "detachFloppy" }
-  | { type: "importFiles"; files: { path: string; bytes: ArrayBuffer }[] }
+  | { type: "importFiles"; name: string; files: { path: string; bytes: ArrayBuffer }[] }
+  | { type: "importZip"; name: string; bytes: ArrayBuffer }
   | { type: "exportDisk" }
   | { type: "wipeDisk" };
 
@@ -30,5 +31,6 @@ export type FromWorker =
   | { type: "log"; text: string }
   | { type: "text"; lines: string[] }
   | { type: "progress"; text: string }
+  | { type: "imported"; dosPath: string; count: number }
   | { type: "disk"; bytes: ArrayBuffer }
   | { type: "error"; text: string };

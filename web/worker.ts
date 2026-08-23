@@ -4,6 +4,9 @@
 import { Core } from "./core.ts";
 import { ChunkStore, SparseImage } from "./store.ts";
 import { buildSystemDisk } from "./sysdisk.ts";
+import { FatFs, type SectorIO } from "./fatfs.ts";
+import { readZip } from "./zip.ts";
+import { textToScancodes } from "./core.ts";
 import type { FromWorker, MachineSettings, ToWorker } from "./protocol.ts";
 
 const post = (m: FromWorker, transfer?: Transferable[]) => (self as unknown as Worker).postMessage(m, transfer ?? []);
@@ -27,6 +30,70 @@ let backlogUs = 0;
 let cpuBusyMs = 0, windowStart = 0, windowInsns = 0n, windowEmuUs = 0;
 let flushTimer: ReturnType<typeof setInterval> | undefined;
 let debugText = false;
+let autoType: { text: string; after: number } | null = null;
+
+class SparseIO implements SectorIO {
+  constructor(public img: SparseImage) {}
+  readSectors(lba: number, count: number, dst: Uint8Array) { return this.img.read(lba, count, dst); }
+  writeSectors(lba: number, count: number, src: Uint8Array) { return this.img.write(lba, count, src); }
+}
+
+function baseName(name: string): string {
+  const n = name.replace(/\\/g, "/").split("/").pop() ?? name;
+  const dot = n.lastIndexOf(".");
+  return dot > 0 ? n.slice(0, dot) : n;
+}
+
+/** Write files into C:\GAMES\<name>; the machine is rebooted afterwards so DOS sees them. */
+async function importInto(name: string, files: { path: string; bytes: Uint8Array }[]) {
+  const img = disks.images.get(2);
+  if (!img) throw new Error("no drive C:");
+  // strip a single common top-level directory
+  let list = files.map((f) => ({ path: f.path.replace(/\\/g, "/").replace(/^\.?\//, ""), bytes: f.bytes })).filter((f) => f.path && !f.path.endsWith("/"));
+  const tops = new Set(list.map((f) => f.path.split("/")[0]));
+  if (tops.size === 1 && list.every((f) => f.path.includes("/"))) {
+    const top = [...tops][0];
+    name = top;
+    list = list.map((f) => ({ path: f.path.slice(top.length + 1), bytes: f.bytes }));
+  }
+  const wasRunning = running;
+  running = false;
+  const fs = new FatFs(new SparseIO(img)).mount();
+  const target = fs.ensurePath("GAMES\\" + baseName(name));
+  let count = 0;
+  const dirCache = new Map<string, number>();
+  for (const f of list) {
+    const parts = f.path.split("/").filter(Boolean);
+    const fname = parts.pop()!;
+    let c = target.cluster;
+    let key = "";
+    for (const d of parts) {
+      key += d + "/";
+      const cached = dirCache.get(key);
+      if (cached !== undefined) { c = cached; continue; }
+      c = fs.mkdir(c, d).cluster;
+      dirCache.set(key, c);
+    }
+    fs.writeFile(c, fname, f.bytes);
+    count++;
+    if (count % 25 === 0) post({ type: "progress", text: `Copying ${count}/${list.length}` });
+  }
+  fs.flush();
+  await flush();
+  post({ type: "imported", dosPath: target.dosPath, count });
+  core.ex.core_reset(0);
+  autoType = { text: `CD ${target.dosPath}\nDIR /W\n`, after: Number(core.ex.core_emu_ns()) + 1_500_000_000 };
+  running = true;
+  lastWall = performance.now();
+  void wasRunning;
+  schedule();
+}
+
+function promptVisible(): boolean {
+  const lines = core.textScreen();
+  for (let i = lines.length - 1; i >= 0; i--) { if (lines[i].trim()) return /^[A-Z]:\\.*>$/.test(lines[i].trim()); }
+  return false;
+}
 const HDD_ID = "hdd0";
 
 async function fetchDosFiles(base: string): Promise<Map<string, Uint8Array>> {
@@ -117,6 +184,10 @@ function tick() {
     if (r === 2) { post({ type: "log", text: "machine reset" }); }
     if (performance.now() - t0 > 12) break; // yield to messages
   }
+  if (autoType && Number(core.ex.core_emu_ns()) > autoType.after && promptVisible()) {
+    for (const c of textToScancodes(autoType.text)) core.ex.core_key(c);
+    autoType = null;
+  }
   backlogUs = dueUs - ran;
   if (backlogUs > 60000) backlogUs = 60000;
   const busy = performance.now() - t0;
@@ -201,8 +272,15 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         post({ type: "log", text: "drive C: wiped; reload the page to rebuild it" });
         break;
       case "importFiles":
-        post({ type: "log", text: "file import arrives in the next update" });
+        await importInto(m.name, m.files.map((f) => ({ path: f.path, bytes: new Uint8Array(f.bytes) })));
         break;
+      case "importZip": {
+        const entries = await readZip(new Uint8Array(m.bytes));
+        const files: { path: string; bytes: Uint8Array }[] = [];
+        for (const e of entries) if (!e.isDir) files.push({ path: e.path, bytes: await e.data() });
+        await importInto(m.name, files);
+        break;
+      }
     }
   } catch (e) {
     post({ type: "error", text: String(e) });

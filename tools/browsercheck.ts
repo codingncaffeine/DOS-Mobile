@@ -5,6 +5,7 @@ import { fromFileUrl } from "jsr:@std/path@1";
 const url = Deno.args[0] ?? "http://127.0.0.1:8088/?debug";
 const waitSec = Number(Deno.args[1] ?? "10");
 const typeText = Deno.args[2];
+const jsAt = Deno.args[3]; // optional JS expression evaluated at half time
 const candidates = [
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
@@ -48,9 +49,10 @@ await call("Log.enable");
 await call("Page.enable");
 await call("Page.navigate", { url });
 const t0 = Date.now();
-let typed = false;
+let typed = false, jsDone = false;
 while (Date.now() - t0 < waitSec * 1000) {
   await new Promise((r) => setTimeout(r, 500));
+  if (jsAt && !jsDone && Date.now() - t0 > waitSec * 400) { jsDone = true; const r = await evalJs(jsAt); if (r !== undefined) console.log("js:", r); }
   if (typeText && !typed && Date.now() - t0 > waitSec * 500) {
     typed = true;
     for (const ch of typeText.replace(/\\n/g, "\n")) {

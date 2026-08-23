@@ -44,6 +44,7 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       break;
     }
     case "log": log(m.text); break;
+    case "imported": toast(`Copied ${m.count} file(s) to ${m.dosPath} — rebooting`, 6000); log(`imported ${m.count} files to ${m.dosPath}`); break;
     case "text": {
       let el = document.getElementById("screen-text");
       if (!el) { el = document.createElement("pre"); el.id = "screen-text"; el.hidden = true; document.body.appendChild(el); }
@@ -112,7 +113,6 @@ proxy.addEventListener("beforeinput", (e: Event) => {
   }
 });
 proxy.addEventListener("input", () => { proxy.value = ""; });
-$("btn-keyboard").onclick = () => { proxy.focus(); };
 $("btn-cad").onclick = () => { send({ type: "key", codes: [0x1D, 0x38, 0xE0, 0x53, 0xE0, 0xD3, 0xB8, 0x9D] }); };
 
 /* ---------------- menu ---------------- */
@@ -136,15 +136,120 @@ async function insertFloppy(f: File) {
   const bytes = await f.arrayBuffer();
   send({ type: "attachFloppy", bytes, name: f.name }, [bytes]);
 }
+/* ---------------- toast ---------------- */
+const toastEl = document.createElement("div");
+toastEl.id = "toast";
+document.body.appendChild(toastEl);
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function toast(text: string, ms = 4000) {
+  toastEl.textContent = text;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+}
+
+/* ---------------- import (ZIP / files / folders) ---------------- */
+const FLOPPY_EXT = /\.(img|ima|dsk|vfd)$/i;
+interface Picked { path: string; file: File }
+
+async function readEntry(entry: FileSystemEntry, prefix: string, out: Picked[]): Promise<void> {
+  if (entry.isFile) {
+    const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej));
+    out.push({ path: prefix + entry.name, file });
+  } else if (entry.isDirectory) {
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const e of batch) await readEntry(e, prefix + entry.name + "/", out);
+    }
+  }
+}
+
+async function importPicked(items: Picked[], nameHint?: string) {
+  if (!items.length) return;
+  if (items.length === 1 && FLOPPY_EXT.test(items[0].file.name)) { await insertFloppy(items[0].file); return; }
+  if (items.length === 1 && /\.zip$/i.test(items[0].file.name)) {
+    const bytes = await items[0].file.arrayBuffer();
+    toast(`Copying ${items[0].file.name} to C:\\GAMES…`);
+    send({ type: "importZip", name: items[0].file.name, bytes }, [bytes]);
+    return;
+  }
+  const files: { path: string; bytes: ArrayBuffer }[] = [];
+  for (const it of items) files.push({ path: it.path, bytes: await it.file.arrayBuffer() });
+  const name = nameHint ?? (items[0].path.includes("/") ? items[0].path.split("/")[0] : items[0].file.name);
+  toast(`Copying ${files.length} file(s) to C:\\GAMES…`);
+  send({ type: "importFiles", name, files }, files.map((f) => f.bytes));
+}
+
+const fileAdd = $<HTMLInputElement>("file-add");
+const fileAddFolder = $<HTMLInputElement>("file-add-folder");
+$("btn-add").onclick = () => fileAdd.click();
+$("btn-add-folder").onclick = () => fileAddFolder.click();
+if (!("webkitdirectory" in fileAddFolder)) $("btn-add-folder").hidden = true;
+fileAdd.onchange = async () => {
+  const list = [...(fileAdd.files ?? [])].map((f) => ({ path: f.name, file: f }));
+  fileAdd.value = "";
+  await importPicked(list);
+};
+fileAddFolder.onchange = async () => {
+  const list = [...(fileAddFolder.files ?? [])].map((f) => ({ path: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name, file: f }));
+  fileAddFolder.value = "";
+  await importPicked(list);
+};
+
 const wrap = $("screen-wrap");
 wrap.addEventListener("dragover", (e) => { e.preventDefault(); wrap.classList.add("drop"); });
 wrap.addEventListener("dragleave", () => wrap.classList.remove("drop"));
 wrap.addEventListener("drop", async (e) => {
   e.preventDefault(); wrap.classList.remove("drop");
-  const f = e.dataTransfer?.files?.[0];
-  if (f) await insertFloppy(f);
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  const picked: Picked[] = [];
+  const entries = [...dt.items].map((i) => (i as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.()).filter(Boolean) as FileSystemEntry[];
+  if (entries.length) for (const en of entries) await readEntry(en, "", picked);
+  else for (const f of dt.files) picked.push({ path: f.name, file: f });
+  await importPicked(picked);
 });
+
+/* ---------------- on-screen keyboard ---------------- */
+const osk = $("oskbd");
+const sticky = new Map<number, HTMLButtonElement>();
+let repeatTimer: ReturnType<typeof setTimeout> | undefined, repeatInterval: ReturnType<typeof setInterval> | undefined;
+function releaseSticky() {
+  for (const [sc, btn] of sticky) { sendScan(sc, false); btn.classList.remove("held"); }
+  sticky.clear();
+}
+for (const btn of osk.querySelectorAll<HTMLButtonElement>("button[data-code]")) {
+  const sc = SCAN[btn.dataset.code!];
+  if (sc === undefined) continue;
+  const isSticky = btn.hasAttribute("data-sticky");
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (isSticky) {
+      if (sticky.has(sc)) { sendScan(sc, false); sticky.delete(sc); btn.classList.remove("held"); }
+      else { sendScan(sc, true); sticky.set(sc, btn); btn.classList.add("held"); }
+      return;
+    }
+    sendScan(sc, true);
+    repeatTimer = setTimeout(() => { repeatInterval = setInterval(() => sendScan(sc, true), 60); }, 400);
+  });
+  const up = (e: Event) => {
+    e.preventDefault();
+    if (isSticky) return;
+    clearTimeout(repeatTimer); clearInterval(repeatInterval);
+    sendScan(sc, false);
+    releaseSticky();
+  };
+  btn.addEventListener("pointerup", up);
+  btn.addEventListener("pointercancel", up);
+  btn.addEventListener("pointerleave", (e) => { if ((e as PointerEvent).buttons) up(e); });
+}
+$("osk-text").onclick = () => proxy.focus();
+$("btn-keyboard").onclick = () => { osk.hidden = !osk.hidden; if (!osk.hidden) proxy.focus(); };
+proxy.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Backspace") { /* handled by the window handler via scancodes */ } });
 document.addEventListener("visibilitychange", () => { if (document.hidden) send({ type: "flush" }); });
 window.addEventListener("pagehide", () => send({ type: "flush" }));
 
+if (new URLSearchParams(location.search).has("debug")) (window as unknown as { dm: unknown }).dm = { send, importPicked, toast };
 start().catch((e) => { overlayText.textContent = "Failed to start: " + e; });
