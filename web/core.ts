@@ -23,6 +23,7 @@ export interface CoreExports {
   core_frame_id(): number;
   core_set_time(y: number, mo: number, d: number, h: number, mi: number, s: number): void;
   core_halted(): number;
+  core_set_trace(level: number): void;
   core_fatal(): number;
   core_insns(): bigint;
   core_emu_ns(): bigint;

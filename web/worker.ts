@@ -4,6 +4,7 @@
 import { Core } from "./core.ts";
 import { ChunkStore, SparseImage } from "./store.ts";
 import { buildSystemDisk } from "./sysdisk.ts";
+import { planDisk } from "./hdd.ts";
 import { FatFs, type SectorIO } from "./fatfs.ts";
 import { readZip } from "./zip.ts";
 import { textToScancodes } from "./core.ts";
@@ -120,8 +121,9 @@ async function ensureHdd(dosBase: string, sizeMB: number) {
   }
   post({ type: "progress", text: "Preparing drive C:" });
   const files = await fetchDosFiles(dosBase);
-  const disk = buildSystemDisk(sizeMB, files);
-  const img = SparseImage.fromBytes(disk.image);
+  const plan = planDisk(sizeMB);
+  const img = new SparseImage(plan.totalSectors);
+  buildSystemDisk(new SparseIO(img), sizeMB, files);
   disks.images.set(2, img);
   await store.putMeta({ id: HDD_ID, sectors: img.sectors, label: "DOS MOBILE", created: Date.now() });
   await store.putChunks(HDD_ID, img.takeDirty());
@@ -260,7 +262,9 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         break;
       case "exportDisk": {
         await flush();
-        const bytes = disks.images.get(2)!.toBytes();
+        const image = disks.images.get(2)!;
+        if (image.sectors * 512 > 768 * 1048576) { post({ type: "error", text: "Drive C: is too large to export as one image; folder export is coming." }); break; }
+        const bytes = image.toBytes();
         const buf = bytes.buffer as ArrayBuffer;
         post({ type: "disk", bytes: buf }, [buf]);
         break;

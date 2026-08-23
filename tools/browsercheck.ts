@@ -17,7 +17,7 @@ if (!exe) { console.error("no Chromium browser found"); Deno.exit(2); }
 const profile = fromFileUrl(new URL("../.cache/edge-profile", import.meta.url));
 const port = 9333;
 const proc = new Deno.Command(exe, {
-  args: ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+  args: ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--ignore-certificate-errors",
     `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, "about:blank"],
   stdout: "null", stderr: "null",
 }).spawn();

@@ -32,11 +32,13 @@ await run("scp", [...scpOpts, ...top, `${host}:${path}/`]);
 const dos: string[] = [];
 for await (const e of Deno.readDir(join(dist, "dos"))) if (e.isFile) dos.push(join(dist, "dos", e.name));
 await run("scp", [...scpOpts, ...dos, `${host}:${path}/dos/`]);
+await run("ssh", [...sshOpts, host!, `chmod -R u=rwX,go=rX '${path}'`]);
 if (url && !args.has("--dry")) {
-  const r = await fetch(url + (url.endsWith("/") ? "" : "/") + "dosmobile.wasm", { method: "HEAD" });
+  const r = await fetch(url + (url.endsWith("/") ? "" : "/") + "dosmobile.wasm", { method: "HEAD" }).catch((e) => { console.log("verify skipped:", String(e).split("
+")[0]); return null; });
+  if (!r) { console.log("deployed to", url); Deno.exit(0); }
   console.log(`verify: ${r.status} ${r.headers.get("content-type")} ${r.headers.get("content-length")} bytes`);
   const local = (await Deno.stat(join(dist, "dosmobile.wasm"))).size;
   console.log(local === Number(r.headers.get("content-length")) ? "wasm size matches" : `size mismatch: local ${local}`);
 }
 console.log("deployed to", url ?? `${host}:${path}`);
-await run("ssh", [...sshOpts, host!, `chmod -R u=rwX,go=rX '${path}'`]);

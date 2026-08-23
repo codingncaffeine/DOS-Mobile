@@ -202,7 +202,7 @@ export class FatFs {
   }
 
   /** Create or replace a file. Returns the 8.3 name used. */
-  writeFile(dirCluster: number, name: string, data: Uint8Array, when = new Date()): string {
+  writeFile(dirCluster: number, name: string, data: Uint8Array, when = new Date(), attr = 0x20): string {
     const existing = this.list(dirCluster).find((e) => e.name === name.toUpperCase() && !(e.attr & 0x10));
     if (existing) this.freeChain(existing.cluster);
     const sn = existing ? existing.name : shortName(name, this.takenNames(dirCluster));
@@ -219,9 +219,24 @@ export class FatFs {
       padded.set(data.subarray(i * clusterBytes, Math.min((i + 1) * clusterBytes, data.length)));
       this.io.writeSectors(this.clusterSector(c), this.spc, padded);
     }
-    if (existing) this.writeEntry(existing.dirSector, existing.dirOffset, sn, 0x20, first, data.length, when);
-    else { const [s, o] = this.freeSlot(dirCluster); this.writeEntry(s, o, sn, 0x20, first, data.length, when); }
+    if (existing) this.writeEntry(existing.dirSector, existing.dirOffset, sn, attr, first, data.length, when);
+    else { const [s, o] = this.freeSlot(dirCluster); this.writeEntry(s, o, sn, attr, first, data.length, when); }
     return sn;
+  }
+
+  /** Volume label entry in the root directory (11 raw characters). */
+  writeLabel(label: string, when = new Date()) {
+    const [s, o] = this.freeSlot(0);
+    const buf = new Uint8Array(SECTOR);
+    this.io.readSectors(s, 1, buf);
+    const raw = buf.subarray(o, o + 32);
+    raw.fill(0);
+    raw.fill(0x20, 0, 11);
+    for (let i = 0; i < 11 && i < label.length; i++) raw[i] = label.charCodeAt(i);
+    raw[11] = 0x08;
+    const { date, time } = fatDateTime(when);
+    raw[22] = time & 0xFF; raw[23] = time >> 8; raw[24] = date & 0xFF; raw[25] = date >> 8;
+    this.io.writeSectors(s, 1, buf);
   }
 
   readFile(e: DirEntry): Uint8Array {

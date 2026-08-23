@@ -12,7 +12,11 @@ void mem_init(u32 ram_bytes) {
   dm_memset(ram + 0xC0000, 0xFF, 0x30000);
 }
 
-void mem_set_a20(int enabled) { a20_mask = enabled ? 0xFFFFFFFFu : ~0x100000u; }
+extern void tlb_flush(void);
+void mem_set_a20(int enabled) {
+  u32 m = enabled ? 0xFFFFFFFFu : ~0x100000u;
+  if (m != a20_mask) { a20_mask = m; tlb_flush(); }
+}
 
 #define IS_VGA(a) ((a) >= 0xA0000 && (a) < 0xC0000)
 #define IS_ROM(a) ((a) >= 0xF0000 && (a) < 0x100000)

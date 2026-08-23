@@ -3,6 +3,7 @@ import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { fromFileUrl, join } from "jsr:@std/path@1";
 import { Core, GEN, textToScancodes } from "../web/core.ts";
 import { buildSystemDisk } from "../web/sysdisk.ts";
+import { planDisk } from "../web/hdd.ts";
 import { ArraySectorIO, FatFs } from "../web/fatfs.ts";
 import { readZip } from "../web/zip.ts";
 
@@ -21,8 +22,9 @@ class MemDisks {
 }
 
 Deno.test("FatFs writes files and directories DOS can read", async () => {
-  const disk = buildSystemDisk(32, await dosFiles());
-  const fs = new FatFs(new ArraySectorIO(disk.image)).mount();
+  const image = new Uint8Array(planDisk(32).totalSectors * 512);
+  buildSystemDisk(new ArraySectorIO(image), 32, await dosFiles());
+  const fs = new FatFs(new ArraySectorIO(image)).mount();
   assert(fs.fat16);
   const freeBefore = fs.freeClusterCount();
   const t = fs.ensurePath("GAMES\\My Long Program Name");
@@ -39,7 +41,7 @@ Deno.test("FatFs writes files and directories DOS can read", async () => {
   fs.flush();
   assert(fs.freeClusterCount() < freeBefore);
   // re-mount and read back
-  const fs2 = new FatFs(new ArraySectorIO(disk.image)).mount();
+  const fs2 = new FatFs(new ArraySectorIO(image)).mount();
   const dir = fs2.resolveDir("GAMES\\MY_LON~1")!;
   const entry = fs2.list(dir).find((e) => e.name === "DATA.BIN")!;
   assertEquals(entry.size, 100_000);
@@ -48,11 +50,11 @@ Deno.test("FatFs writes files and directories DOS can read", async () => {
 
   // DOS agrees: boot, TYPE the text file, CHKDSK reports no errors
   const disks = new MemDisks();
-  disks.images.set(2, disk.image);
+  disks.images.set(2, image);
   const core = new Core(disks, () => {});
   await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
   core.ex.core_init(GEN.G486, 66000, 4096, 0, 1, 4, 0);
-  core.ex.core_disk_attach(2, disk.image.length / 512, 0);
+  core.ex.core_disk_attach(2, image.length / 512, 0);
   const run = (ms: number) => { for (let t = 0; t < ms; t += 10) if (core.ex.core_run_us(10_000) === 1) throw new Error("fatal"); };
   run(2500);
   for (const c of textToScancodes("TYPE C:\\GAMES\\MY_LON~1\\README~1.TXT\nCHKDSK\n")) core.ex.core_key(c);

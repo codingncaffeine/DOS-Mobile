@@ -51,6 +51,8 @@ EXPORT("core_frame_id") u32 core_frame_id(void) { return vga_frame_id(); }
 EXPORT("core_set_time") void core_set_time(int y, int mo, int d, int h, int mi, int s) { cmos_set_time(y, mo, d, h, mi, s); }
 
 /* Debug / test helpers */
+extern int cpu_trace_faults;
+EXPORT("core_set_trace") void core_set_trace(int level) { cpu_trace_faults = level; }
 EXPORT("core_halted") int core_halted(void) { return cpu.halted; }
 EXPORT("core_fatal") int core_fatal(void) { return cpu.fatal; }
 EXPORT("core_insns") u64 core_insns(void) { return cpu.insn_count; }

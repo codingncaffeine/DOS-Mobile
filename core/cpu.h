@@ -22,13 +22,18 @@ enum {
 enum { EXC_DE = 0, EXC_DB = 1, EXC_NMI = 2, EXC_BP = 3, EXC_OF = 4, EXC_BR = 5, EXC_UD = 6, EXC_NM = 7,
        EXC_DF = 8, EXC_TS = 10, EXC_NP = 11, EXC_SS = 12, EXC_GP = 13, EXC_PF = 14, EXC_MF = 16 };
 
+/* Segment cache flags */
+enum { SEGF_READ = 1, SEGF_WRITE = 2, SEGF_CODE = 4, SEGF_EXPDOWN = 8, SEGF_CONFORMING = 16 };
+
 typedef struct {
   u16 sel;
   u32 base;
-  u32 limit; /* byte-granular effective limit */
-  u16 attr;  /* descriptor access/flags byte pair (bits 8-15 of dword 1 + G/D in 12-15) */
-  u8 db;     /* default operand/address size: 1 = 32-bit */
-  u8 valid;
+  u32 limit;  /* byte-granular effective limit (for expand-down: the lower bound) */
+  u8 access;  /* descriptor access byte: P DPL S Type */
+  u8 flags;   /* SEGF_* */
+  u8 db;      /* default operand/address size: 1 = 32-bit (D/B bit) */
+  u8 valid;   /* 0 = null selector loaded (any access faults) */
+  u8 dpl;
 } Seg;
 
 /* Lazy flag record: the last arithmetic result + operands; flags are derived on demand. */
@@ -46,7 +51,12 @@ typedef struct CPU {
   u32 cr0, cr2, cr3, cr4;
   u32 dr[8];
   struct { u32 base; u32 limit; } gdtr, idtr;
-  Seg ldtr, tr;
+  Seg ldtr, tr;  /* ldtr/tr: base/limit/access of the loaded LDT / TSS */
+  u8 tss_is32;
+
+  /* instruction-fetch page cache (linear page → host pointer), invalidated with the TLB */
+  u32 fetch_page_lin;
+  const u8 *fetch_page_ptr;
 
   u8 gen;         /* GEN_* */
   u8 fpu_present;
@@ -74,6 +84,8 @@ typedef struct CPU {
   u8 fault_vec;
   u8 fault_has_err;
   u32 fault_err;
+  u32 fault_cr2;
+  u8 in_fault_delivery; /* nested fault detection → #DF / triple fault */
 
   /* statistics */
   u64 insn_count;

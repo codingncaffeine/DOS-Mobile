@@ -8,7 +8,7 @@ export interface MachineSettings {
   hddSizeMB: number;
 }
 
-export const DEFAULT_SETTINGS: MachineSettings = { gen: 5, mhz: 66, ramKb: 8192, fpu: false, hddSizeMB: 128 };
+export const DEFAULT_SETTINGS: MachineSettings = { gen: 5, mhz: 66, ramKb: 8192, fpu: false, hddSizeMB: 8192 };
 
 export type ToWorker =
   | { type: "init"; wasm: ArrayBuffer; settings: MachineSettings; dosBase: string; canvas?: OffscreenCanvas; debug?: boolean }

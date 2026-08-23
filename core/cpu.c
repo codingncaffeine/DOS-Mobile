@@ -43,10 +43,15 @@ void cpu_reset(void) {
     cpu.seg[s].sel = 0;
     cpu.seg[s].base = 0;
     cpu.seg[s].limit = 0xFFFF;
-    cpu.seg[s].attr = 0x93;
+    cpu.seg[s].access = s == SEG_CS ? 0x9B : 0x93;
+    cpu.seg[s].flags = (u8)(SEGF_READ | SEGF_WRITE | (s == SEG_CS ? SEGF_CODE : 0));
     cpu.seg[s].db = 0;
     cpu.seg[s].valid = 1;
+    cpu.seg[s].dpl = 0;
   }
+  cpu.ldtr.valid = 0; cpu.tr.valid = 0; cpu.tss_is32 = 0;
+  cpu.in_fault_delivery = 0;
+  tlb_flush();
   /* Reset vector: F000:FFF0 (the BIOS ROM lives at F0000 for every generation here). */
   cpu.seg[SEG_CS].sel = 0xF000;
   cpu.seg[SEG_CS].base = 0xF0000;
@@ -387,6 +392,7 @@ static void string_op(u8 op) {
       }
       case 0x6C: { /* INS */
         u16 port = reg16_get(REG_DX);
+        if (!io_allowed(port, bits / 8)) return;
         if (bits == 8) wr8s(SEG_ES, di, io_rd8(port));
         else if (bits == 16) wr16s(SEG_ES, di, io_rd16(port));
         else wr32s(SEG_ES, di, io_rd32(port));
@@ -395,6 +401,7 @@ static void string_op(u8 op) {
       }
       default: { /* OUTS */
         u16 port = reg16_get(REG_DX);
+        if (!io_allowed(port, bits / 8)) return;
         if (bits == 8) io_wr8(port, rd8s(seg, si));
         else if (bits == 16) io_wr16(port, rd16s(seg, si));
         else io_wr32(port, rd32s(seg, si));
@@ -472,6 +479,7 @@ static void exec_primary(u8 op) {
     /* ALU r/m,r ; r,r/m ; AL,imm8 ; eAX,imm */
     case 0x00: case 0x08: case 0x10: case 0x18: case 0x20: case 0x28: case 0x30: case 0x38: {
       decode_modrm();
+      if (op != 0x38 && !rm_probe(8)) break;
       u32 a = rm_rd8();
       FAULT_CHECK();
       u32 r = alu_op(op >> 3, 8, a, reg8_get(cpu.modrm_reg));
@@ -480,6 +488,7 @@ static void exec_primary(u8 op) {
     }
     case 0x01: case 0x09: case 0x11: case 0x19: case 0x21: case 0x29: case 0x31: case 0x39: {
       decode_modrm();
+      if (op != 0x39 && !rm_probe(osize_bits())) break;
       u32 a = rm_rdv();
       FAULT_CHECK();
       u32 r = alu_op(op >> 3, osize_bits(), a, regv_get(cpu.modrm_reg));
@@ -516,7 +525,7 @@ static void exec_primary(u8 op) {
     }
 
     case 0x06: pushv(cpu.seg[SEG_ES].sel); break;
-    case 0x07: { u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_ES, (u16)v); break; }
+    case 0x07: { u32 v = popv(); FAULT_CHECK(); load_seg(SEG_ES, (u16)v); break; }
     case 0x0E: pushv(cpu.seg[SEG_CS].sel); break;
     case 0x0F:
       /* the BIOS ROM's HLE hook (0F FF) must work on every generation; elsewhere 8086/186 treat 0F as POP CS */
@@ -524,9 +533,9 @@ static void exec_primary(u8 op) {
       else { u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_CS, (u16)v); }
       break;
     case 0x16: pushv(cpu.seg[SEG_SS].sel); break;
-    case 0x17: { u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_SS, (u16)v); cpu.inhibit = 1; break; }
+    case 0x17: { u32 v = popv(); FAULT_CHECK(); load_seg(SEG_SS, (u16)v); cpu.inhibit = 1; break; }
     case 0x1E: pushv(cpu.seg[SEG_DS].sel); break;
-    case 0x1F: { u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_DS, (u16)v); break; }
+    case 0x1F: { u32 v = popv(); FAULT_CHECK(); load_seg(SEG_DS, (u16)v); break; }
 
     case 0x27: op_daa(); break;
     case 0x2F: op_das(); break;
@@ -677,6 +686,7 @@ static void exec_primary(u8 op) {
     /* group 1 */
     case 0x80: case 0x82: {
       decode_modrm();
+      if (cpu.modrm_reg != 7 && !rm_probe(8)) break;
       u32 a = rm_rd8();
       FAULT_CHECK();
       u32 imm = fetch8();
@@ -686,6 +696,7 @@ static void exec_primary(u8 op) {
     }
     case 0x81: {
       decode_modrm();
+      if (cpu.modrm_reg != 7 && !rm_probe(osize_bits())) break;
       u32 a = rm_rdv();
       FAULT_CHECK();
       u32 imm = fetchv();
@@ -695,6 +706,7 @@ static void exec_primary(u8 op) {
     }
     case 0x83: {
       decode_modrm();
+      if (cpu.modrm_reg != 7 && !rm_probe(osize_bits())) break;
       u32 a = rm_rdv();
       FAULT_CHECK();
       u32 imm = (u32)(s32)(s8)fetch8();
@@ -706,17 +718,21 @@ static void exec_primary(u8 op) {
     case 0x85: { decode_modrm(); u32 a = rm_rdv(); FAULT_CHECK(); alu_op(4, osize_bits(), a, regv_get(cpu.modrm_reg)); break; }
     case 0x86: {
       decode_modrm();
+      if (!rm_probe(8)) break;
       u32 a = rm_rd8();
       FAULT_CHECK();
       rm_wr8(reg8_get(cpu.modrm_reg));
+      FAULT_CHECK();
       reg8_set(cpu.modrm_reg, (u8)a);
       break;
     }
     case 0x87: {
       decode_modrm();
+      if (!rm_probe(osize_bits())) break;
       u32 a = rm_rdv();
       FAULT_CHECK();
       rm_wrv(regv_get(cpu.modrm_reg));
+      FAULT_CHECK();
       regv_set(cpu.modrm_reg, a);
       break;
     }
@@ -741,15 +757,18 @@ static void exec_primary(u8 op) {
       if (s >= SEG_COUNT || (s >= SEG_FS && cpu.gen < GEN_386) || (s == SEG_CS && cpu.gen >= GEN_286)) { cpu_ud(); break; }
       u32 v = rm_rd16();
       FAULT_CHECK();
-      load_seg_real(s, (u16)v);
+      load_seg(s, (u16)v);
       if (s == SEG_SS) cpu.inhibit = 1;
       break;
     }
-    case 0x8F: { /* POP r/m */
-      u32 v = popv();
+    case 0x8F: { /* POP r/m: the write must succeed before SP moves */
+      u32 v = peekv(0);
       FAULT_CHECK();
+      u32 sp_before = sp_get();
+      sp_add(cpu.osize32 ? 4 : 2); /* the effective address may use (E)SP after the pop */
       decode_modrm();
       rm_wrv(v);
+      if (cpu.fault_pending) sp_set(sp_before);
       break;
     }
 
@@ -776,17 +795,24 @@ static void exec_primary(u8 op) {
     }
     case 0x9B: break; /* WAIT */
     case 0x9C: { /* PUSHF */
+      if (in_v86() && iopl() < 3) { raise_fault(EXC_GP, 1, 0); break; }
       u32 f = cpu_get_eflags();
       if (cpu.osize32) push32(f & ~(u32)(F_VM | F_RF));
       else push16((u16)f);
       break;
     }
     case 0x9D: { /* POPF */
+      if (in_v86() && iopl() < 3) { raise_fault(EXC_GP, 1, 0); break; }
       u32 v = popv();
       FAULT_CHECK();
       u32 cur = cpu_get_eflags();
-      if (cpu.osize32) cpu_set_eflags((cur & 0xFFFF0000u & ~(u32)(F_ID | F_AC)) | (v & 0xFFFF) | (v & (F_ID | F_AC)));
-      else cpu_set_eflags((cur & 0xFFFF0000u) | (v & 0xFFFF));
+      u32 mask = cpu.osize32 ? 0x00257FD5u : 0x7FD5u;
+      if (in_pmode()) {
+        if (cpu.cpl > 0 || in_v86()) mask &= ~(u32)F_IOPL;
+        if (cpu.cpl > iopl()) mask &= ~(u32)F_IF;
+      }
+      mask &= ~(u32)(F_VM | F_RF | F_VIP | F_VIF);
+      cpu_set_eflags((cur & ~mask) | (v & mask));
       break;
     }
     case 0x9E: { /* SAHF */
@@ -816,11 +842,13 @@ static void exec_primary(u8 op) {
     case 0xC0: /* group 2 r/m8, imm8 (186+) */
       if (cpu.gen < GEN_186) goto ret_imm;
       decode_modrm();
+      if (!rm_probe(8)) break;
       { u32 v = rm_rd8(); FAULT_CHECK(); u32 c = fetch8(); shift_op(cpu.modrm_reg, 8, v, c); }
       break;
     case 0xC1:
       if (cpu.gen < GEN_186) goto ret_near;
       decode_modrm();
+      if (!rm_probe(osize_bits())) break;
       { u32 v = rm_rdv(); FAULT_CHECK(); u32 c = fetch8(); shift_op(cpu.modrm_reg, osize_bits(), v, c); }
       break;
     case 0xC2: ret_imm: {
@@ -845,7 +873,7 @@ static void exec_primary(u8 op) {
       u32 off = rdvs(cpu.ea_seg, cpu.ea);
       u16 sel = rd16s(cpu.ea_seg, cpu.ea + (cpu.osize32 ? 4 : 2));
       FAULT_CHECK();
-      load_seg_real(op == 0xC4 ? SEG_ES : SEG_DS, sel);
+      load_seg(op == 0xC4 ? SEG_ES : SEG_DS, sel);
       FAULT_CHECK();
       regv_set(cpu.modrm_reg, off);
       break;
@@ -886,10 +914,10 @@ static void exec_primary(u8 op) {
     case 0xCE: if (flag_of()) cpu_interrupt(4, 1, 0, 0, cpu.eip); break;
     case 0xCF: cpu_iret(); break;
 
-    case 0xD0: decode_modrm(); { u32 v = rm_rd8(); FAULT_CHECK(); shift_op(cpu.modrm_reg, 8, v, 1); } break;
-    case 0xD1: decode_modrm(); { u32 v = rm_rdv(); FAULT_CHECK(); shift_op(cpu.modrm_reg, osize_bits(), v, 1); } break;
-    case 0xD2: decode_modrm(); { u32 v = rm_rd8(); FAULT_CHECK(); shift_op(cpu.modrm_reg, 8, v, reg8_get(1)); } break;
-    case 0xD3: decode_modrm(); { u32 v = rm_rdv(); FAULT_CHECK(); shift_op(cpu.modrm_reg, osize_bits(), v, reg8_get(1)); } break;
+    case 0xD0: decode_modrm(); if (!rm_probe(8)) break; { u32 v = rm_rd8(); FAULT_CHECK(); shift_op(cpu.modrm_reg, 8, v, 1); } break;
+    case 0xD1: decode_modrm(); if (!rm_probe(osize_bits())) break; { u32 v = rm_rdv(); FAULT_CHECK(); shift_op(cpu.modrm_reg, osize_bits(), v, 1); } break;
+    case 0xD2: decode_modrm(); if (!rm_probe(8)) break; { u32 v = rm_rd8(); FAULT_CHECK(); shift_op(cpu.modrm_reg, 8, v, reg8_get(1)); } break;
+    case 0xD3: decode_modrm(); if (!rm_probe(osize_bits())) break; { u32 v = rm_rdv(); FAULT_CHECK(); shift_op(cpu.modrm_reg, osize_bits(), v, reg8_get(1)); } break;
     case 0xD4: { /* AAM */
       u32 imm = fetch8();
       if (imm == 0) { raise_fault(EXC_DE, 0, 0); break; }
@@ -941,10 +969,10 @@ static void exec_primary(u8 op) {
       if (cx == 0) cpu.eip = (cpu.eip + (u32)rel) & eip_mask();
       break;
     }
-    case 0xE4: reg8_set(0, io_rd8(fetch8())); break;
-    case 0xE5: { u16 p = fetch8(); regv_set(REG_AX, cpu.osize32 ? io_rd32(p) : io_rd16(p)); break; }
-    case 0xE6: io_wr8(fetch8(), reg8_get(0)); break;
-    case 0xE7: { u16 p = fetch8(); if (cpu.osize32) io_wr32(p, cpu.r[REG_AX]); else io_wr16(p, reg16_get(REG_AX)); break; }
+    case 0xE4: { u16 p = fetch8(); if (!io_allowed(p, 1)) break; reg8_set(0, io_rd8(p)); break; }
+    case 0xE5: { u16 p = fetch8(); if (!io_allowed(p, cpu.osize32 ? 4 : 2)) break; regv_set(REG_AX, cpu.osize32 ? io_rd32(p) : io_rd16(p)); break; }
+    case 0xE6: { u16 p = fetch8(); if (!io_allowed(p, 1)) break; io_wr8(p, reg8_get(0)); break; }
+    case 0xE7: { u16 p = fetch8(); if (!io_allowed(p, cpu.osize32 ? 4 : 2)) break; if (cpu.osize32) io_wr32(p, cpu.r[REG_AX]); else io_wr16(p, reg16_get(REG_AX)); break; }
     case 0xE8: { /* CALL rel */
       u32 rel = fetchv_sx();
       pushv(cpu.eip);
@@ -956,24 +984,25 @@ static void exec_primary(u8 op) {
     case 0xE9: { u32 rel = fetchv_sx(); cpu.eip = (cpu.eip + rel) & eip_mask(); cpu.cycles += 3; break; }
     case 0xEA: { u32 off = fetchv(); u16 sel = fetch16(); cpu_far_jump(sel, off); break; }
     case 0xEB: { s32 rel = (s8)fetch8(); cpu.eip = (cpu.eip + (u32)rel) & eip_mask(); cpu.cycles += 3; break; }
-    case 0xEC: reg8_set(0, io_rd8(reg16_get(REG_DX))); break;
-    case 0xED: regv_set(REG_AX, cpu.osize32 ? io_rd32(reg16_get(REG_DX)) : io_rd16(reg16_get(REG_DX))); break;
-    case 0xEE: io_wr8(reg16_get(REG_DX), reg8_get(0)); break;
-    case 0xEF: if (cpu.osize32) io_wr32(reg16_get(REG_DX), cpu.r[REG_AX]); else io_wr16(reg16_get(REG_DX), reg16_get(REG_AX)); break;
+    case 0xEC: if (!io_allowed(reg16_get(REG_DX), 1)) break; reg8_set(0, io_rd8(reg16_get(REG_DX))); break;
+    case 0xED: if (!io_allowed(reg16_get(REG_DX), cpu.osize32 ? 4 : 2)) break; regv_set(REG_AX, cpu.osize32 ? io_rd32(reg16_get(REG_DX)) : io_rd16(reg16_get(REG_DX))); break;
+    case 0xEE: if (!io_allowed(reg16_get(REG_DX), 1)) break; io_wr8(reg16_get(REG_DX), reg8_get(0)); break;
+    case 0xEF: if (!io_allowed(reg16_get(REG_DX), cpu.osize32 ? 4 : 2)) break; if (cpu.osize32) io_wr32(reg16_get(REG_DX), cpu.r[REG_AX]); else io_wr16(reg16_get(REG_DX), reg16_get(REG_AX)); break;
 
     case 0xF1: cpu_interrupt(1, 1, 0, 0, cpu.eip); break; /* ICEBP */
-    case 0xF4: cpu.halted = 1; break;
+    case 0xF4: if (!require_cpl0()) break; cpu.halted = 1; break;
     case 0xF5: set_cf(!flag_cf()); break;
-    case 0xF6: decode_modrm(); group3(8); break;
-    case 0xF7: decode_modrm(); group3(osize_bits()); break;
+    case 0xF6: decode_modrm(); if ((cpu.modrm_reg == 2 || cpu.modrm_reg == 3) && !rm_probe(8)) break; group3(8); break;
+    case 0xF7: decode_modrm(); if ((cpu.modrm_reg == 2 || cpu.modrm_reg == 3) && !rm_probe(osize_bits())) break; group3(osize_bits()); break;
     case 0xF8: set_cf(0); break;
     case 0xF9: set_cf(1); break;
-    case 0xFA: cpu.eflags &= ~(u32)F_IF; break;
-    case 0xFB: if (!(cpu.eflags & F_IF)) cpu.inhibit = 1; cpu.eflags |= F_IF; break;
+    case 0xFA: if (in_pmode() && (in_v86() ? iopl() < 3 : cpu.cpl > iopl())) { raise_fault(EXC_GP, 1, 0); break; } cpu.eflags &= ~(u32)F_IF; break;
+    case 0xFB: if (in_pmode() && (in_v86() ? iopl() < 3 : cpu.cpl > iopl())) { raise_fault(EXC_GP, 1, 0); break; } if (!(cpu.eflags & F_IF)) cpu.inhibit = 1; cpu.eflags |= F_IF; break;
     case 0xFC: cpu.eflags &= ~(u32)F_DF; break;
     case 0xFD: cpu.eflags |= F_DF; break;
     case 0xFE: { /* group 4 */
       decode_modrm();
+      if (cpu.modrm_reg <= 1 && !rm_probe(8)) break;
       u32 v = rm_rd8();
       FAULT_CHECK();
       if (cpu.modrm_reg == 0) rm_wr8((u8)alu_inc(8, v));
@@ -983,6 +1012,7 @@ static void exec_primary(u8 op) {
     }
     case 0xFF: { /* group 5 */
       decode_modrm();
+      if (cpu.modrm_reg <= 1 && !rm_probe(osize_bits())) break;
       switch (cpu.modrm_reg) {
         case 0: { u32 v = rm_rdv(); FAULT_CHECK(); rm_wrv(alu_inc(osize_bits(), v)); break; }
         case 1: { u32 v = rm_rdv(); FAULT_CHECK(); rm_wrv(alu_dec(osize_bits(), v)); break; }
@@ -1068,7 +1098,7 @@ u64 cpu_run(u64 target_cycles) {
     }
     int tf = (cpu.eflags & F_TF) != 0;
     cpu_step();
-    if (UNLIKELY(tf) && !cpu.fault_pending && !cpu.halted) cpu_interrupt(1, 0, 0, 0, cpu.eip);
+    if (UNLIKELY(tf) && !cpu.fault_pending && !cpu.halted && !cpu.in_fault_delivery) cpu_interrupt(1, 0, 0, 0, cpu.eip);
   }
   u64 done = cpu.cycles - start;
   cpu.tsc += done;

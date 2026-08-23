@@ -20,12 +20,12 @@ static u32 frame_flags_addr(void) { return cpu.seg[SEG_SS].base + ((cpu.r[REG_SP
 static void done(int slot, u8 status) {
   reg8_set(4, status);
   u32 a = frame_flags_addr();
-  u16 f = mem_rd16(a);
+  u16 f = lin_rd16(a);
   f = status ? (u16)(f | F_CF) : (u16)(f & ~F_CF);
-  mem_wr16(a, f);
+  lin_wr16(a, f);
   set_cf(status != 0);
-  if (slot >= 2) mem_wr8(BDA + 0x74, status);
-  else mem_wr8(BDA + 0x41, status);
+  if (slot >= 2) lin_wr8(BDA + 0x74, status);
+  else lin_wr8(BDA + 0x41, status);
 }
 
 static int chs_to_lba(Disk *d, int cyl, int head, int sector, u32 *lba) {
@@ -34,8 +34,10 @@ static int chs_to_lba(Disk *d, int cyl, int head, int sector, u32 *lba) {
   return 1;
 }
 
+extern int cpu_trace_faults;
 void int13(void) {
   u8 fn = AH, drive = DL;
+  if (cpu_trace_faults >= 2) dm_log("INT13 fn=%02x dl=%02x ch=%02x cl=%02x dh=%02x al=%02x es:bx=%04x:%04x", fn, drive, CH, CL, DH, AL, ES_SEL, BX);
   int slot = disk_slot_for_bios(drive);
   Disk *d = slot >= 0 ? &disks[slot] : NULL;
   int floppy = drive < 0x80;
@@ -47,9 +49,9 @@ void int13(void) {
       done(slot, 0);
       return;
     case 0x01:
-      reg8_set(0, mem_rd8(BDA + (floppy ? 0x41 : 0x74)));
+      reg8_set(0, lin_rd8(BDA + (floppy ? 0x41 : 0x74)));
       done(slot < 0 ? 0 : slot, 0);
-      reg8_set(4, mem_rd8(BDA + (floppy ? 0x41 : 0x74)));
+      reg8_set(4, lin_rd8(BDA + (floppy ? 0x41 : 0x74)));
       return;
     case 0x02: case 0x03: case 0x04: {
       if (!drive_exists) { done(slot < 0 ? 0 : slot, 0x01); return; }
@@ -144,29 +146,29 @@ void int13(void) {
     case 0x42: case 0x43: { /* extended read/write via disk address packet at DS:SI */
       if (floppy || !drive_exists) { done(slot < 0 ? 0 : slot, 0x01); return; }
       u32 pkt = ((u32)DS_SEL << 4) + SI;
-      u32 count = mem_rd16(pkt + 2);
-      u32 off = mem_rd16(pkt + 4), seg = mem_rd16(pkt + 6);
-      u32 lba = mem_rd32(pkt + 8);
-      u32 lba_hi = mem_rd32(pkt + 12);
+      u32 count = lin_rd16(pkt + 2);
+      u32 off = lin_rd16(pkt + 4), seg = lin_rd16(pkt + 6);
+      u32 lba = lin_rd32(pkt + 8);
+      u32 lba_hi = lin_rd32(pkt + 12);
       if (lba_hi || count > 127) { done(slot, 0x01); return; }
       int st = fn == 0x42 ? disk_read(slot, lba, count, (seg << 4) + off) : disk_write(slot, lba, count, (seg << 4) + off);
-      if (st) mem_wr16(pkt + 2, 0);
+      if (st) lin_wr16(pkt + 2, 0);
       done(slot, (u8)st);
       return;
     }
     case 0x48: {
       if (floppy || !drive_exists) { done(slot < 0 ? 0 : slot, 0x01); return; }
       u32 buf = ((u32)DS_SEL << 4) + SI;
-      u16 size = mem_rd16(buf);
+      u16 size = lin_rd16(buf);
       if (size < 26) { done(slot, 0x01); return; }
-      mem_wr16(buf, 26);
-      mem_wr16(buf + 2, 0x0002); /* CHS info valid */
-      mem_wr32(buf + 4, d->cyls);
-      mem_wr32(buf + 8, d->heads);
-      mem_wr32(buf + 12, d->spt);
-      mem_wr32(buf + 16, d->sectors);
-      mem_wr32(buf + 20, 0);
-      mem_wr16(buf + 24, 512);
+      lin_wr16(buf, 26);
+      lin_wr16(buf + 2, 0x0002); /* CHS info valid */
+      lin_wr32(buf + 4, d->cyls);
+      lin_wr32(buf + 8, d->heads);
+      lin_wr32(buf + 12, d->spt);
+      lin_wr32(buf + 16, d->sectors);
+      lin_wr32(buf + 20, 0);
+      lin_wr16(buf + 24, 512);
       done(slot, 0);
       return;
     }
@@ -179,7 +181,7 @@ void int13(void) {
 static int try_boot(int slot, u8 dl) {
   if (!disks[slot].present) return 0;
   if (disk_read(slot, 0, 1, 0x7C00) != 0) return 0;
-  if (slot >= 2 && mem_rd16(0x7DFE) != 0xAA55) return 0;
+  if (slot >= 2 && lin_rd16(0x7DFE) != 0xAA55) return 0;
   if (slot < 2) disks[slot].changed = 0;
   /* hand over to the boot sector */
   cpu_load_seg(SEG_CS, 0);
@@ -208,13 +210,13 @@ void int18(void) {
     waiting_key = 1;
   }
   /* wait for a keystroke, then retry the boot */
-  u16 head = mem_rd16(BDA + 0x1A), tail = mem_rd16(BDA + 0x1C);
+  u16 head = lin_rd16(BDA + 0x1A), tail = lin_rd16(BDA + 0x1C);
   if (head == tail) {
     cpu.eip = cpu.eip_start;
     cpu.eflags |= F_IF;
     cpu.halted = 1;
     return;
   }
-  mem_wr16(BDA + 0x1A, tail); /* drain */
+  lin_wr16(BDA + 0x1A, tail); /* drain */
   waiting_key = 0;
 }

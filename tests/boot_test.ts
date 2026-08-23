@@ -2,7 +2,9 @@
 import { assert, assertStringIncludes } from "jsr:@std/assert@1";
 import { fromFileUrl, join } from "jsr:@std/path@1";
 import { Core, GEN, textToScancodes } from "../web/core.ts";
+import { ArraySectorIO } from "../web/fatfs.ts";
 import { buildSystemDisk } from "../web/sysdisk.ts";
+import { planDisk } from "../web/hdd.ts";
 
 const root = fromFileUrl(new URL("..", import.meta.url));
 
@@ -21,14 +23,15 @@ class MemDisks {
 async function bootMachine(gen: number, mhz: number) {
   const files = new Map<string, Uint8Array>();
   for await (const e of Deno.readDir(join(root, "dos"))) if (e.isFile) files.set(e.name.toUpperCase(), await Deno.readFile(join(root, "dos", e.name)));
-  const disk = buildSystemDisk(32, files);
+  const image = new Uint8Array(planDisk(32).totalSectors * 512);
+  buildSystemDisk(new ArraySectorIO(image), 32, files);
   const disks = new MemDisks();
-  disks.images.set(2, disk.image);
+  disks.images.set(2, image);
   const logs: string[] = [];
   const core = new Core(disks, (s) => logs.push(s));
   await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
   core.ex.core_init(gen, Math.round(mhz * 1000), 4096, 0, 1, 4, 0);
-  core.ex.core_disk_attach(2, disk.image.length / 512, 0);
+  core.ex.core_disk_attach(2, image.length / 512, 0);
   return { core, logs };
 }
 

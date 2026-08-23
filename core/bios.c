@@ -13,12 +13,12 @@
 BiosConfig bios_cfg;
 
 /* ---------------- BDA helpers ---------------- */
-INLINE u8 bda8(u32 off) { return mem_rd8(BDA + off); }
-INLINE u16 bda16(u32 off) { return mem_rd16(BDA + off); }
-INLINE u32 bda32(u32 off) { return mem_rd32(BDA + off); }
-INLINE void bda8w(u32 off, u8 v) { mem_wr8(BDA + off, v); }
-INLINE void bda16w(u32 off, u16 v) { mem_wr16(BDA + off, v); }
-INLINE void bda32w(u32 off, u32 v) { mem_wr32(BDA + off, v); }
+INLINE u8 bda8(u32 off) { return lin_rd8(BDA + off); }
+INLINE u16 bda16(u32 off) { return lin_rd16(BDA + off); }
+INLINE u32 bda32(u32 off) { return lin_rd32(BDA + off); }
+INLINE void bda8w(u32 off, u8 v) { lin_wr8(BDA + off, v); }
+INLINE void bda16w(u32 off, u16 v) { lin_wr16(BDA + off, v); }
+INLINE void bda32w(u32 off, u32 v) { lin_wr32(BDA + off, v); }
 
 /* register shorthands */
 #define AL reg8_get(0)
@@ -58,16 +58,16 @@ INLINE void bda32w(u32 off, u32 v) { mem_wr32(BDA + off, v); }
 static u32 frame_flags_addr(void) { return cpu.seg[SEG_SS].base + ((cpu.r[REG_SP] + 4) & sp_mask()); }
 static void ret_cf(int v) {
   u32 a = frame_flags_addr();
-  u16 f = mem_rd16(a);
+  u16 f = lin_rd16(a);
   f = v ? (u16)(f | F_CF) : (u16)(f & ~F_CF);
-  mem_wr16(a, f);
+  lin_wr16(a, f);
   set_cf(v);
 }
 static void ret_zf(int v) {
   u32 a = frame_flags_addr();
-  u16 f = mem_rd16(a);
+  u16 f = lin_rd16(a);
   f = v ? (u16)(f | F_ZF) : (u16)(f & ~F_ZF);
-  mem_wr16(a, f);
+  lin_wr16(a, f);
   flags_sync();
   cpu.eflags = v ? (cpu.eflags | F_ZF) : (cpu.eflags & ~(u32)F_ZF);
 }
@@ -217,7 +217,7 @@ static void set_cursor_shape(u8 start, u8 end) {
 
 static u32 font_ptr(int height) {
   (void)height;
-  return mem_rd32(0x43 * 4); /* INT 43h: seg:off of the active graphics font */
+  return lin_rd32(0x43 * 4); /* INT 43h: seg:off of the active graphics font */
 }
 
 /* graphics-mode pixel access (direct plane layout, mode-aware) */
@@ -291,7 +291,7 @@ static void draw_glyph(int row, int col, u8 ch, u8 color, int xor_mode) {
   u32 fbase = ((fp >> 16) << 4) + (fp & 0xFFFF);
   int x0 = col * 8, y0 = row * h;
   for (int r = 0; r < h; r++) {
-    u8 bits = mem_rd8(fbase + (u32)ch * (u32)h + (u32)r);
+    u8 bits = lin_rd8(fbase + (u32)ch * (u32)h + (u32)r);
     for (int b = 0; b < 8; b++) {
       int on = (bits >> (7 - b)) & 1;
       if (xor_mode) { if (on) put_pixel(x0 + b, y0 + r, color & 0x7F, 1); }
@@ -303,8 +303,8 @@ static void draw_glyph(int row, int col, u8 ch, u8 color, int xor_mode) {
 static void write_cell(int page, int row, int col, u8 ch, u8 attr, int with_attr) {
   if (text_mode()) {
     u32 a = text_base() + (u32)page * bda16(0x4C) + ((u32)row * (u32)cols() + (u32)col) * 2;
-    mem_wr8(a, ch);
-    if (with_attr) mem_wr8(a + 1, attr);
+    lin_wr8(a, ch);
+    if (with_attr) lin_wr8(a + 1, attr);
   } else {
     draw_glyph(row, col, ch, attr, (attr & 0x80) != 0);
   }
@@ -325,8 +325,8 @@ static void scroll_window(int lines, int up, u8 attr, int r0, int c0, int r1, in
         int src = r + lines;
         for (int c = c0; c <= c1; c++) {
           u32 d = base + ((u32)r * (u32)nc + (u32)c) * 2;
-          if (src <= r1) { u32 s = base + ((u32)src * (u32)nc + (u32)c) * 2; mem_wr16(d, mem_rd16(s)); }
-          else mem_wr16(d, (u16)(0x20 | (attr << 8)));
+          if (src <= r1) { u32 s = base + ((u32)src * (u32)nc + (u32)c) * 2; lin_wr16(d, lin_rd16(s)); }
+          else lin_wr16(d, (u16)(0x20 | (attr << 8)));
         }
       }
     } else {
@@ -334,8 +334,8 @@ static void scroll_window(int lines, int up, u8 attr, int r0, int c0, int r1, in
         int src = r - lines;
         for (int c = c0; c <= c1; c++) {
           u32 d = base + ((u32)r * (u32)nc + (u32)c) * 2;
-          if (src >= r0) { u32 s = base + ((u32)src * (u32)nc + (u32)c) * 2; mem_wr16(d, mem_rd16(s)); }
-          else mem_wr16(d, (u16)(0x20 | (attr << 8)));
+          if (src >= r0) { u32 s = base + ((u32)src * (u32)nc + (u32)c) * 2; lin_wr16(d, lin_rd16(s)); }
+          else lin_wr16(d, (u16)(0x20 | (attr << 8)));
         }
       }
     }
@@ -392,14 +392,14 @@ static void set_video_mode(int mode) {
   bda8w(0x8A, 0x08);
   vga_set_mode(mode);
   /* fonts: text modes get 8x16, 200-line graphics 8x8, 350-line 8x14, 480-line 8x16 */
-  if (height == 16) { vga_load_font(font8x16, 16, 0, 256, 0); mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF); }
-  else if (height == 14) { vga_load_font(rom(BIOS_FONT14_OFF), 14, 0, 256, 0); mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF); }
+  if (height == 16) { vga_load_font(font8x16, 16, 0, 256, 0); lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF); }
+  else if (height == 14) { vga_load_font(rom(BIOS_FONT14_OFF), 14, 0, 256, 0); lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF); }
   else {
     static u8 f8[2048];
     dm_memcpy(f8, rom(BIOS_FONT8_OFF), 1024);
     dm_memcpy(f8 + 1024, rom(BIOS_FONT8HI_OFF), 1024);
     vga_load_font(f8, 8, 0, 256, 0);
-    mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8_OFF);
+    lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8_OFF);
   }
   if (m <= 3 || m == 7) set_cursor_shape(6, 7);
   else set_cursor_shape(0x20, 0);
@@ -425,7 +425,7 @@ void bios_putc(u8 c) {
   if (row >= nr) {
     row = nr - 1;
     u8 attr = 0x07;
-    if (text_mode()) attr = (u8)(mem_rd16(text_base() + (u32)page * bda16(0x4C) + ((u32)row * (u32)nc + (u32)(nc - 1)) * 2) >> 8);
+    if (text_mode()) attr = (u8)(lin_rd16(text_base() + (u32)page * bda16(0x4C) + ((u32)row * (u32)nc + (u32)(nc - 1)) * 2) >> 8);
     scroll_window(1, 1, attr, 0, 0, nr - 1, nc - 1);
   }
   bda16w(0x50 + page * 2, (u16)((row << 8) | col));
@@ -469,7 +469,7 @@ static void int10(void) {
       u16 pos = bda16(0x50 + page * 2);
       if (text_mode()) {
         u32 a = text_base() + (u32)page * bda16(0x4C) + ((u32)(pos >> 8) * (u32)cols() + (u32)(pos & 0xFF)) * 2;
-        SET_AX(mem_rd16(a));
+        SET_AX(lin_rd16(a));
       } else {
         SET_AX(0); /* character recognition in graphics modes: not supported */
       }
@@ -525,7 +525,7 @@ static void int10(void) {
         case 0x01: vga_set_attr_reg(0x11, BH); break;
         case 0x02: {
           u32 a = ((u32)ES_SEL << 4) + DX;
-          for (int i = 0; i < 17; i++) vga_set_attr_reg(i == 16 ? 0x11 : i, mem_rd8(a + (u32)i));
+          for (int i = 0; i < 17; i++) vga_set_attr_reg(i == 16 ? 0x11 : i, lin_rd8(a + (u32)i));
           break;
         }
         case 0x03: {
@@ -537,7 +537,7 @@ static void int10(void) {
         case 0x08: SET_BH(vga_get_attr_reg(0x11)); break;
         case 0x09: {
           u32 a = ((u32)ES_SEL << 4) + DX;
-          for (int i = 0; i < 17; i++) mem_wr8(a + (u32)i, vga_get_attr_reg(i == 16 ? 0x11 : i));
+          for (int i = 0; i < 17; i++) lin_wr8(a + (u32)i, vga_get_attr_reg(i == 16 ? 0x11 : i));
           break;
         }
         case 0x10: vga_set_dac(BX, DH, CH, CL); break;
@@ -545,7 +545,7 @@ static void int10(void) {
           u32 a = ((u32)ES_SEL << 4) + DX;
           u32 n = CX, first = BX;
           for (u32 i = 0; i < n && i < 256; i++)
-            vga_set_dac((int)(first + i), mem_rd8(a + i * 3), mem_rd8(a + i * 3 + 1), mem_rd8(a + i * 3 + 2));
+            vga_set_dac((int)(first + i), lin_rd8(a + i * 3), lin_rd8(a + i * 3 + 1), lin_rd8(a + i * 3 + 2));
           break;
         }
         case 0x13: {
@@ -560,7 +560,7 @@ static void int10(void) {
           u32 n = CX, first = BX;
           for (u32 i = 0; i < n && i < 256; i++) {
             u8 r, g, b; vga_get_dac((int)(first + i), &r, &g, &b);
-            mem_wr8(a + i * 3, r); mem_wr8(a + i * 3 + 1, g); mem_wr8(a + i * 3 + 2, b);
+            lin_wr8(a + i * 3, r); lin_wr8(a + i * 3 + 1, g); lin_wr8(a + i * 3 + 2, b);
           }
           break;
         }
@@ -593,7 +593,7 @@ static void int10(void) {
           u32 a = ((u32)ES_SEL << 4) + BP;
           int h = BH, count = CX, first = DX;
           static u8 buf[256 * 32];
-          for (int i = 0; i < count * h && i < (int)sizeof buf; i++) buf[i] = mem_rd8(a + (u32)i);
+          for (int i = 0; i < count * h && i < (int)sizeof buf; i++) buf[i] = lin_rd8(a + (u32)i);
           vga_load_font(buf, h, first, count, BL & 7);
           height = h;
           break;
@@ -622,20 +622,20 @@ static void int10(void) {
         set_cursor_shape((u8)(height - 2), (u8)(height - 1));
       }
       if ((al & 0x0F) >= 0x20 && 0) {}
-      if (al == 0x20) mem_wr32(0x1F * 4, ((u32)ES_SEL << 16) | BP);
+      if (al == 0x20) lin_wr32(0x1F * 4, ((u32)ES_SEL << 16) | BP);
       else if (al == 0x21) {
-        mem_wr32(0x43 * 4, ((u32)ES_SEL << 16) | BP);
+        lin_wr32(0x43 * 4, ((u32)ES_SEL << 16) | BP);
         int nrows = BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43;
         bda8w(0x84, (u8)(nrows - 1));
         bda16w(0x85, CX);
-      } else if (al == 0x22) { mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF); bda16w(0x85, 14); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
-      else if (al == 0x23) { mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8_OFF); bda16w(0x85, 8); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
-      else if (al == 0x24) { mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF); bda16w(0x85, 16); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
+      } else if (al == 0x22) { lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF); bda16w(0x85, 14); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
+      else if (al == 0x23) { lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8_OFF); bda16w(0x85, 8); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
+      else if (al == 0x24) { lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF); bda16w(0x85, 16); bda8w(0x84, (u8)((BL == 0 ? DL : BL == 1 ? 14 : BL == 2 ? 25 : 43) - 1)); }
       else if (al == 0x30) {
         u32 ptr;
         switch (BH) {
-          case 0: ptr = mem_rd32(0x1F * 4); break;
-          case 1: ptr = mem_rd32(0x43 * 4); break;
+          case 0: ptr = lin_rd32(0x1F * 4); break;
+          case 1: ptr = lin_rd32(0x43 * 4); break;
           case 2: case 5: ptr = ((u32)BIOS_SEG << 16) | BIOS_FONT14_OFF; break;
           case 3: ptr = ((u32)BIOS_SEG << 16) | BIOS_FONT8_OFF; break;
           case 4: ptr = ((u32)BIOS_SEG << 16) | BIOS_FONT8HI_OFF; break;
@@ -671,8 +671,8 @@ static void int10(void) {
       u8 attr = BL;
       u16 save = bda16(0x50 + page * 2);
       for (u16 i = 0; i < n; i++) {
-        u8 c = mem_rd8(a++);
-        if (mode & 2) attr = mem_rd8(a++);
+        u8 c = lin_rd8(a++);
+        if (mode & 2) attr = lin_rd8(a++);
         if (c == 8 || c == 10 || c == 13 || c == 7) {
           bda16w(0x50 + page * 2, (u16)((row << 8) | col));
           bios_putc(c);
@@ -693,33 +693,33 @@ static void int10(void) {
       break;
     case 0x1B: {
       u32 a = ((u32)ES_SEL << 4) + DI;
-      for (int i = 0; i < 64; i++) mem_wr8(a + (u32)i, 0);
-      mem_wr32(a + 0, ((u32)BIOS_SEG << 16) | BIOS_STATIC_FN_OFF);
-      mem_wr8(a + 4, bda8(0x49));
-      mem_wr16(a + 5, (u16)cols());
-      mem_wr16(a + 7, bda16(0x4C));
-      mem_wr16(a + 9, bda16(0x4E));
-      for (int i = 0; i < 8; i++) mem_wr16(a + 11 + (u32)i * 2, bda16(0x50 + i * 2));
-      mem_wr16(a + 27, bda16(0x60));
-      mem_wr8(a + 29, bda8(0x62));
-      mem_wr16(a + 30, bda16(0x63));
-      mem_wr8(a + 32, bda8(0x65));
-      mem_wr8(a + 33, bda8(0x66));
-      mem_wr8(a + 34, (u8)rows());
-      mem_wr16(a + 35, bda16(0x85));
-      mem_wr8(a + 37, 0x08);
-      mem_wr8(a + 38, 0x00);
+      for (int i = 0; i < 64; i++) lin_wr8(a + (u32)i, 0);
+      lin_wr32(a + 0, ((u32)BIOS_SEG << 16) | BIOS_STATIC_FN_OFF);
+      lin_wr8(a + 4, bda8(0x49));
+      lin_wr16(a + 5, (u16)cols());
+      lin_wr16(a + 7, bda16(0x4C));
+      lin_wr16(a + 9, bda16(0x4E));
+      for (int i = 0; i < 8; i++) lin_wr16(a + 11 + (u32)i * 2, bda16(0x50 + i * 2));
+      lin_wr16(a + 27, bda16(0x60));
+      lin_wr8(a + 29, bda8(0x62));
+      lin_wr16(a + 30, bda16(0x63));
+      lin_wr8(a + 32, bda8(0x65));
+      lin_wr8(a + 33, bda8(0x66));
+      lin_wr8(a + 34, (u8)rows());
+      lin_wr16(a + 35, bda16(0x85));
+      lin_wr8(a + 37, 0x08);
+      lin_wr8(a + 38, 0x00);
       {
         int m = bda8(0x49);
         u16 colors = m == 0x13 ? 0x100 : (m == 6 || m == 0x11) ? 2 : (m == 4 || m == 5) ? 4 : 16;
-        mem_wr16(a + 39, colors);
-        mem_wr8(a + 41, (u8)(m <= 3 ? 8 : m == 7 ? 8 : m == 0x13 ? 1 : 2));
-        mem_wr8(a + 42, (u8)(bda8(0x85) == 8 ? 0 : bda8(0x85) == 14 ? 1 : bda8(0x85) == 16 && rows() == 30 ? 3 : 2));
+        lin_wr16(a + 39, colors);
+        lin_wr8(a + 41, (u8)(m <= 3 ? 8 : m == 7 ? 8 : m == 0x13 ? 1 : 2));
+        lin_wr8(a + 42, (u8)(bda8(0x85) == 8 ? 0 : bda8(0x85) == 14 ? 1 : bda8(0x85) == 16 && rows() == 30 ? 3 : 2));
       }
-      mem_wr8(a + 43, 0);
-      mem_wr8(a + 44, 0);
-      mem_wr8(a + 45, 0x11);
-      mem_wr8(a + 49, 3);
+      lin_wr8(a + 43, 0);
+      lin_wr8(a + 44, 0);
+      lin_wr8(a + 45, 0x11);
+      lin_wr8(a + 49, 3);
       SET_AL(0x1B);
       break;
     }
@@ -779,16 +779,16 @@ static int kbuf_push(u16 ax) {
   u16 next = (u16)(tail + 2);
   if (next >= end) next = start;
   if (next == head) return 0; /* full */
-  mem_wr16(BDA + tail, ax);
+  lin_wr16(BDA + tail, ax);
   bda16w(0x1C, next);
   return 1;
 }
 
 static int kbuf_empty(void) { return bda16(0x1A) == bda16(0x1C); }
-static u16 kbuf_peek(void) { return mem_rd16(BDA + bda16(0x1A)); }
+static u16 kbuf_peek(void) { return lin_rd16(BDA + bda16(0x1A)); }
 static u16 kbuf_pop(void) {
   u16 head = bda16(0x1A);
-  u16 v = mem_rd16(BDA + head);
+  u16 v = lin_rd16(BDA + head);
   head += 2;
   if (head >= bda16(0x82)) head = bda16(0x80);
   bda16w(0x1A, head);
@@ -990,8 +990,8 @@ static void int15(void) {
     case 0x87: {
       u32 gdt = ((u32)ES_SEL << 4) + SI;
       u32 words = CX;
-      u32 src = mem_rd16(gdt + 0x12) | ((u32)mem_rd8(gdt + 0x14) << 16) | ((u32)mem_rd8(gdt + 0x17) << 24);
-      u32 dst = mem_rd16(gdt + 0x1A) | ((u32)mem_rd8(gdt + 0x1C) << 16) | ((u32)mem_rd8(gdt + 0x1F) << 24);
+      u32 src = lin_rd16(gdt + 0x12) | ((u32)lin_rd8(gdt + 0x14) << 16) | ((u32)lin_rd8(gdt + 0x17) << 24);
+      u32 dst = lin_rd16(gdt + 0x1A) | ((u32)lin_rd8(gdt + 0x1C) << 16) | ((u32)lin_rd8(gdt + 0x1F) << 24);
       u32 old = a20_mask;
       a20_mask = 0xFFFFFFFFu;
       for (u32 i = 0; i < words; i++) mem_wr16(dst + i * 2, mem_rd16(src + i * 2));
@@ -1029,9 +1029,9 @@ static void int15(void) {
           case 2: base = 0xF0000; len = 0x10000; type = 2; break;
           default: base = 0x100000; len = total - 0x100000; type = 1; break;
         }
-        mem_wr32(a, (u32)base); mem_wr32(a + 4, (u32)(base >> 32));
-        mem_wr32(a + 8, (u32)len); mem_wr32(a + 12, (u32)(len >> 32));
-        mem_wr32(a + 16, type);
+        lin_wr32(a, (u32)base); lin_wr32(a + 4, (u32)(base >> 32));
+        lin_wr32(a + 8, (u32)len); lin_wr32(a + 12, (u32)(len >> 32));
+        lin_wr32(a + 16, type);
         cpu.r[REG_AX] = 0x534D4150u;
         cpu.r[REG_CX] = 20;
         cpu.r[REG_BX] = idx >= 3 ? 0 : idx + 1;
@@ -1054,7 +1054,7 @@ static u16 equipment_word(void) {
 static void post(int warm) {
   (void)warm;
   /* BDA */
-  for (u32 i = 0; i < 0x100; i++) mem_wr8(BDA + i, 0);
+  for (u32 i = 0; i < 0x100; i++) lin_wr8(BDA + i, 0);
   bda16w(0x10, equipment_word());
   bda16w(0x13, 640);
   bda16w(0x1A, 0x1E); bda16w(0x1C, 0x1E);
@@ -1065,14 +1065,14 @@ static void post(int warm) {
   bda8w(0x75, (u8)bios_cfg.hdds);
   bda8w(0x8F, (u8)((bios_cfg.floppies > 0 ? 0x04 : 0) | (bios_cfg.floppies > 1 ? 0x40 : 0)));
   bda8w(0x90, 0x00); bda8w(0x91, 0x00);
-  mem_wr32(BDA + 0xA8, ((u32)BIOS_SEG << 16) | BIOS_SAVE_PTR_OFF);
+  lin_wr32(BDA + 0xA8, ((u32)BIOS_SEG << 16) | BIOS_SAVE_PTR_OFF);
   /* IVT */
-  for (int v = 0; v < 256; v++) mem_wr32((u32)v * 4, ((u32)BIOS_SEG << 16) | (BIOS_STUB_BASE + (u32)v * 16));
-  mem_wr32(0x1E * 4, ((u32)BIOS_SEG << 16) | BIOS_DPT_OFF);
-  mem_wr32(0x1F * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8HI_OFF);
-  mem_wr32(0x41 * 4, ((u32)BIOS_SEG << 16) | BIOS_FDPT0_OFF);
-  mem_wr32(0x46 * 4, ((u32)BIOS_SEG << 16) | BIOS_FDPT1_OFF);
-  mem_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF);
+  for (int v = 0; v < 256; v++) lin_wr32((u32)v * 4, ((u32)BIOS_SEG << 16) | (BIOS_STUB_BASE + (u32)v * 16));
+  lin_wr32(0x1E * 4, ((u32)BIOS_SEG << 16) | BIOS_DPT_OFF);
+  lin_wr32(0x1F * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT8HI_OFF);
+  lin_wr32(0x41 * 4, ((u32)BIOS_SEG << 16) | BIOS_FDPT0_OFF);
+  lin_wr32(0x46 * 4, ((u32)BIOS_SEG << 16) | BIOS_FDPT1_OFF);
+  lin_wr32(0x43 * 4, ((u32)BIOS_SEG << 16) | BIOS_FONT16_OFF);
   /* fixed disk parameter tables */
   for (int i = 0; i < 2; i++) {
     u8 *t = rom(i == 0 ? BIOS_FDPT0_OFF : BIOS_FDPT1_OFF);

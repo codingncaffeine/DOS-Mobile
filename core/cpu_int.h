@@ -1,7 +1,8 @@
-/* Internal CPU helpers shared by cpu.c / cpu_0f.c / cpu_pm.c */
+/* Internal CPU helpers shared by cpu.c / cpu_0f.c / cpu_pm.c / fpu.c */
 #pragma once
 #include "cpu.h"
 #include "mem.h"
+#include "paging.h"
 
 extern const u8 parity_tab[256];
 
@@ -75,7 +76,6 @@ INLINE int flag_of(void) {
   }
 }
 
-/* Materialise the lazy flags into EFLAGS. */
 INLINE void flags_sync(void) {
   if (cpu.lf_type == LF_NONE) return;
   u32 f = cpu.eflags & ~F_ARITH;
@@ -89,7 +89,6 @@ INLINE void flags_sync(void) {
   cpu.lf_type = LF_NONE;
 }
 
-/* Result-only flags (ZF/SF/PF from res; CF/OF/AF written explicitly by the caller). */
 INLINE void lf_zsp(int bits, u32 res, int cf, int of) {
   flags_sync();
   cpu.eflags = (cpu.eflags & ~(u32)(F_CF | F_OF)) | (cf ? F_CF : 0) | (of ? F_OF : 0);
@@ -125,55 +124,108 @@ INLINE void raise_fault(u8 vec, int has_err, u32 err) {
   }
 }
 #define FAULT_CHECK() do { if (UNLIKELY(cpu.fault_pending)) return; } while (0)
+#define FAULT_CHECK_RET(v) do { if (UNLIKELY(cpu.fault_pending)) return (v); } while (0)
 
-/* ---------------- linear memory through segments ---------------- */
-/* Segment limit checks apply only to 32-bit offsets in real mode (P0); descriptors in P2. */
-INLINE u32 seg_lin(int s, u32 off) {
-  if (UNLIKELY(off > cpu.seg[s].limit)) raise_fault(s == SEG_SS ? EXC_SS : EXC_GP, 1, 0);
-  return cpu.seg[s].base + off;
+/* ---------------- mode helpers ---------------- */
+INLINE int in_pmode(void) { return (cpu.cr0 & 1) != 0; }
+INLINE int in_v86(void) { return (cpu.eflags & F_VM) != 0; }
+INLINE int in_prot(void) { return in_pmode() && !in_v86(); } /* descriptor-based protected mode */
+INLINE int paging_on(void) { return (cpu.cr0 & 0x80000000u) != 0; }
+INLINE int osize_bits(void) { return cpu.osize32 ? 32 : 16; }
+INLINE int iopl(void) { return (int)((cpu.eflags >> 12) & 3); }
+
+/* ---------------- linear memory (paging-aware) ---------------- */
+INLINE u8 lin_rd8(u32 lin) { return LIKELY(!paging_on()) ? mem_rd8(lin) : lin_rd8_slow(lin); }
+INLINE u16 lin_rd16(u32 lin) { return LIKELY(!paging_on()) ? mem_rd16(lin) : lin_rd16_slow(lin); }
+INLINE u32 lin_rd32(u32 lin) { return LIKELY(!paging_on()) ? mem_rd32(lin) : lin_rd32_slow(lin); }
+INLINE void lin_wr8(u32 lin, u8 v) { if (LIKELY(!paging_on())) mem_wr8(lin, v); else lin_wr8_slow(lin, v); }
+INLINE void lin_wr16(u32 lin, u16 v) { if (LIKELY(!paging_on())) mem_wr16(lin, v); else lin_wr16_slow(lin, v); }
+INLINE void lin_wr32(u32 lin, u32 v) { if (LIKELY(!paging_on())) mem_wr32(lin, v); else lin_wr32_slow(lin, v); }
+
+/* ---------------- segment-relative access with limit / access checks ---------------- */
+INLINE int seg_check(int s, u32 off, u32 size, int write) {
+  const Seg *sg = &cpu.seg[s];
+  if (UNLIKELY(!sg->valid)) { raise_fault(EXC_GP, 1, 0); return 0; }
+  u32 last = off + size - 1;
+  if (sg->flags & SEGF_EXPDOWN) {
+    u32 top = sg->db ? 0xFFFFFFFFu : 0xFFFFu;
+    if (UNLIKELY(off <= sg->limit || last > top || last < off)) { raise_fault(s == SEG_SS ? EXC_SS : EXC_GP, 1, 0); return 0; }
+  } else if (UNLIKELY(last > sg->limit || last < off)) {
+    raise_fault(s == SEG_SS ? EXC_SS : EXC_GP, 1, 0);
+    return 0;
+  }
+  if (in_prot()) {
+    if (write ? !(sg->flags & SEGF_WRITE) : !(sg->flags & SEGF_READ)) { raise_fault(EXC_GP, 1, 0); return 0; }
+  }
+  return 1;
 }
-INLINE u8 rd8s(int s, u32 off) { return mem_rd8(seg_lin(s, off)); }
-INLINE u16 rd16s(int s, u32 off) { return mem_rd16(seg_lin(s, off)); }
-INLINE u32 rd32s(int s, u32 off) { return mem_rd32(seg_lin(s, off)); }
-INLINE void wr8s(int s, u32 off, u8 v) { mem_wr8(seg_lin(s, off), v); }
-INLINE void wr16s(int s, u32 off, u16 v) { mem_wr16(seg_lin(s, off), v); }
-INLINE void wr32s(int s, u32 off, u32 v) { mem_wr32(seg_lin(s, off), v); }
+INLINE u8 rd8s(int s, u32 off) { if (!seg_check(s, off, 1, 0)) return 0; return lin_rd8(cpu.seg[s].base + off); }
+INLINE u16 rd16s(int s, u32 off) { if (!seg_check(s, off, 2, 0)) return 0; return lin_rd16(cpu.seg[s].base + off); }
+INLINE u32 rd32s(int s, u32 off) { if (!seg_check(s, off, 4, 0)) return 0; return lin_rd32(cpu.seg[s].base + off); }
+INLINE void wr8s(int s, u32 off, u8 v) { if (!seg_check(s, off, 1, 1)) return; lin_wr8(cpu.seg[s].base + off, v); }
+INLINE void wr16s(int s, u32 off, u16 v) { if (!seg_check(s, off, 2, 1)) return; lin_wr16(cpu.seg[s].base + off, v); }
+INLINE void wr32s(int s, u32 off, u32 v) { if (!seg_check(s, off, 4, 1)) return; lin_wr32(cpu.seg[s].base + off, v); }
 INLINE u32 rdvs(int s, u32 off) { return cpu.osize32 ? rd32s(s, off) : rd16s(s, off); }
 INLINE void wrvs(int s, u32 off, u32 v) { if (cpu.osize32) wr32s(s, off, v); else wr16s(s, off, (u16)v); }
+/* Verify a write will succeed (used before read-modify-write so faults leave no partial state). */
+INLINE int probe_write(int s, u32 off, u32 size) {
+  if (!seg_check(s, off, size, 1)) return 0;
+  if (paging_on()) return lin_probe_write_slow(cpu.seg[s].base + off, size);
+  return 1;
+}
 
 /* ---------------- instruction fetch ---------------- */
 INLINE u32 eip_mask(void) { return cpu.seg[SEG_CS].db ? 0xFFFFFFFFu : 0xFFFFu; }
 INLINE u8 fetch8(void) {
-  u8 v = mem_rd8(cpu.seg[SEG_CS].base + cpu.eip);
+  u32 lin = cpu.seg[SEG_CS].base + cpu.eip;
+  u8 v;
+  if (LIKELY((lin & ~0xFFFu) == cpu.fetch_page_lin && cpu.fetch_page_ptr)) v = cpu.fetch_page_ptr[lin & 0xFFF];
+  else {
+    if ((lin & ~0xFFFu) != cpu.fetch_page_lin && !fetch_page_prepare(lin)) return 0;
+    v = cpu.fetch_page_ptr ? cpu.fetch_page_ptr[lin & 0xFFF] : lin_rd8(lin);
+  }
   cpu.eip = (cpu.eip + 1) & eip_mask();
   return v;
 }
 INLINE u16 fetch16(void) {
-  u16 v = mem_rd16(cpu.seg[SEG_CS].base + cpu.eip);
-  cpu.eip = (cpu.eip + 2) & eip_mask();
-  return v;
+  u32 lin = cpu.seg[SEG_CS].base + cpu.eip;
+  if (LIKELY((lin & 0xFFF) <= 0xFFE && (lin & ~0xFFFu) == cpu.fetch_page_lin && cpu.fetch_page_ptr)) {
+    u16 v = ld16(cpu.fetch_page_ptr + (lin & 0xFFF));
+    cpu.eip = (cpu.eip + 2) & eip_mask();
+    return v;
+  }
+  u16 lo = fetch8();
+  return (u16)(lo | (fetch8() << 8));
 }
 INLINE u32 fetch32(void) {
-  u32 v = mem_rd32(cpu.seg[SEG_CS].base + cpu.eip);
-  cpu.eip = (cpu.eip + 4) & eip_mask();
-  return v;
+  u32 lin = cpu.seg[SEG_CS].base + cpu.eip;
+  if (LIKELY((lin & 0xFFF) <= 0xFFC && (lin & ~0xFFFu) == cpu.fetch_page_lin && cpu.fetch_page_ptr)) {
+    u32 v = ld32(cpu.fetch_page_ptr + (lin & 0xFFF));
+    cpu.eip = (cpu.eip + 4) & eip_mask();
+    return v;
+  }
+  u32 lo = fetch16();
+  return lo | ((u32)fetch16() << 16);
 }
 INLINE u32 fetchv(void) { return cpu.osize32 ? fetch32() : fetch16(); }
 INLINE u32 fetchv_sx(void) { return cpu.osize32 ? fetch32() : (u32)(s32)(s16)fetch16(); }
 
-/* ---------------- stack ---------------- */
+/* ---------------- stack (fault-safe: SP moves only after the access succeeded) ---------------- */
 INLINE u32 sp_mask(void) { return cpu.seg[SEG_SS].db ? 0xFFFFFFFFu : 0xFFFFu; }
-INLINE void sp_add(s32 d) {
-  if (cpu.seg[SEG_SS].db) cpu.r[REG_SP] += (u32)d;
-  else cpu.r[REG_SP] = (cpu.r[REG_SP] & 0xFFFF0000u) | ((cpu.r[REG_SP] + (u32)d) & 0xFFFFu);
+INLINE void sp_set(u32 v) {
+  if (cpu.seg[SEG_SS].db) cpu.r[REG_SP] = v;
+  else cpu.r[REG_SP] = (cpu.r[REG_SP] & 0xFFFF0000u) | (v & 0xFFFFu);
 }
+INLINE void sp_add(s32 d) { sp_set((cpu.r[REG_SP] + (u32)d) & sp_mask()); }
 INLINE u32 sp_get(void) { return cpu.r[REG_SP] & sp_mask(); }
-INLINE void push16(u16 v) { sp_add(-2); wr16s(SEG_SS, sp_get(), v); }
-INLINE void push32(u32 v) { sp_add(-4); wr32s(SEG_SS, sp_get(), v); }
+INLINE void push16(u16 v) { u32 nsp = (sp_get() - 2) & sp_mask(); wr16s(SEG_SS, nsp, v); if (!cpu.fault_pending) sp_set(nsp); }
+INLINE void push32(u32 v) { u32 nsp = (sp_get() - 4) & sp_mask(); wr32s(SEG_SS, nsp, v); if (!cpu.fault_pending) sp_set(nsp); }
 INLINE void pushv(u32 v) { if (cpu.osize32) push32(v); else push16((u16)v); }
-INLINE u16 pop16(void) { u16 v = rd16s(SEG_SS, sp_get()); sp_add(2); return v; }
-INLINE u32 pop32(void) { u32 v = rd32s(SEG_SS, sp_get()); sp_add(4); return v; }
+INLINE u16 pop16(void) { u16 v = rd16s(SEG_SS, sp_get()); if (!cpu.fault_pending) sp_add(2); return v; }
+INLINE u32 pop32(void) { u32 v = rd32s(SEG_SS, sp_get()); if (!cpu.fault_pending) sp_add(4); return v; }
 INLINE u32 popv(void) { return cpu.osize32 ? pop32() : pop16(); }
+/* peek without moving SP (for instructions that must not commit before their write) */
+INLINE u32 peekv(u32 depth) { return cpu.osize32 ? rd32s(SEG_SS, (sp_get() + depth) & sp_mask()) : rd16s(SEG_SS, (sp_get() + depth) & sp_mask()); }
 
 /* ---------------- ModRM ---------------- */
 void decode_modrm(void);
@@ -186,9 +238,10 @@ INLINE void rm_wr8(u8 v) { if (rm_is_reg()) reg8_set(cpu.modrm_rm, v); else wr8s
 INLINE void rm_wr16(u16 v) { if (rm_is_reg()) reg16_set(cpu.modrm_rm, v); else wr16s(cpu.ea_seg, cpu.ea, v); }
 INLINE void rm_wr32(u32 v) { if (rm_is_reg()) reg32_set(cpu.modrm_rm, v); else wr32s(cpu.ea_seg, cpu.ea, v); }
 INLINE void rm_wrv(u32 v) { if (cpu.osize32) rm_wr32(v); else rm_wr16((u16)v); }
+/* for read-modify-write memory operands: check the write first */
+INLINE int rm_probe(int bits) { return rm_is_reg() ? 1 : probe_write(cpu.ea_seg, cpu.ea, (u32)bits / 8); }
 
 /* ---------------- ALU ---------------- */
-/* op: 0 ADD 1 OR 2 ADC 3 SBB 4 AND 5 SUB 6 XOR 7 CMP */
 INLINE u32 alu_op(int op, int bits, u32 a, u32 b) {
   u32 m = size_mask(bits), res;
   a &= m;
@@ -215,23 +268,33 @@ INLINE u32 alu_dec(int bits, u32 a) {
   return res;
 }
 
-/* ---------------- mode helpers ---------------- */
-INLINE int in_pmode(void) { return (cpu.cr0 & 1) != 0; }
-INLINE int in_v86(void) { return (cpu.eflags & F_VM) != 0; }
-INLINE int osize_bits(void) { return cpu.osize32 ? 32 : 16; }
+/* ---------------- privilege helpers ---------------- */
+INLINE int io_allowed(u16 port, int size);     /* cpu_pm.c */
+INLINE int require_cpl0(void) { if (in_pmode() && (cpu.cpl != 0 || in_v86())) { raise_fault(EXC_GP, 1, 0); return 0; } return 1; }
 
 /* segment loading / control transfers (cpu_pm.c) */
 void load_seg_real(int s, u16 sel);
+void load_seg(int s, u16 sel);        /* mode-aware: real, V86 or protected */
 void cpu_interrupt(u8 vec, int is_sw, int has_err, u32 err, u32 ret_eip);
 void cpu_far_jump(u16 sel, u32 off);
 void cpu_far_call(u16 sel, u32 off);
 void cpu_far_ret(int pop_bytes);
 void cpu_iret(void);
 void cpu_deliver_fault(void);
+void cpu_update_cpl(void);
+int io_allowed_slow(u16 port, int size);
+INLINE int io_allowed(u16 port, int size) {
+  if (LIKELY(!in_pmode())) return 1;
+  if (!in_v86() && cpu.cpl <= iopl()) return 1;
+  return io_allowed_slow(port, size);
+}
 
 /* two-byte opcodes (cpu_0f.c) */
 void cpu_exec_0f(void);
+void cpu_sys_0f00(void);
+void cpu_sys_lar_lsl(int is_lsl);
+void cpu_ltr_lldt(int is_tr, u16 sel);
 
-/* string / misc helpers used by both files */
+/* misc */
 void cpu_ud(void);
 u32 cpu_cycles_add(u32 n);

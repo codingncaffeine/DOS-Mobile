@@ -1,5 +1,6 @@
 #include "disk.h"
 #include "mem.h"
+#include "cpu_int.h"
 
 Disk disks[DISK_SLOTS];
 static u8 bounce[512 * 128];
@@ -65,7 +66,7 @@ int disk_read(int slot, u32 lba, u32 count, u32 phys) {
   while (count) {
     u32 n = count > 128 ? 128 : count;
     if (host_disk_read(slot, lba, n, bounce) != 0) return 0x04;
-    mem_copy_in(phys, bounce, n * 512);
+    lin_copy_in(phys, bounce, n * 512);
     lba += n;
     phys += n * 512;
     count -= n;
@@ -80,7 +81,7 @@ int disk_write(int slot, u32 lba, u32 count, u32 phys) {
   if (lba + count > d->sectors || count == 0) return 0x04;
   while (count) {
     u32 n = count > 128 ? 128 : count;
-    mem_copy_out(bounce, phys, n * 512);
+    lin_copy_out(bounce, phys, n * 512);
     if (host_disk_write(slot, lba, n, bounce) != 0) return 0x04;
     lba += n;
     phys += n * 512;

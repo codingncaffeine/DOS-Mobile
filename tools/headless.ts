@@ -2,6 +2,10 @@
 // Usage: deno run -A tools/headless.ts [--hdd path] [--floppy path] [--ms N] [--type "text\n"] [--gen 5] [--mhz 66]
 import { fromFileUrl, join } from "jsr:@std/path@1";
 import { Core, GEN, textToScancodes } from "../web/core.ts";
+import { SparseImage } from "../web/store.ts";
+import { buildSystemDisk } from "../web/sysdisk.ts";
+import { planDisk } from "../web/hdd.ts";
+import type { SectorIO } from "../web/fatfs.ts";
 
 const root = fromFileUrl(new URL("..", import.meta.url));
 const a = Deno.args;
@@ -9,7 +13,9 @@ const opt = (name: string, def?: string) => { const i = a.indexOf("--" + name); 
 
 class FileDisks {
   images = new Map<number, Uint8Array>();
+  sparse = new Map<number, SparseImage>();
   read(slot: number, lba: number, count: number, dst: Uint8Array) {
+    const sp = this.sparse.get(slot); if (sp) return sp.read(lba, count, dst);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
     if (off + count * 512 > img.length) return false;
@@ -17,6 +23,7 @@ class FileDisks {
     return true;
   }
   write(slot: number, lba: number, count: number, src: Uint8Array) {
+    const sp = this.sparse.get(slot); if (sp) return sp.write(lba, count, src);
     const img = this.images.get(slot); if (!img) return false;
     const off = lba * 512;
     if (off + count * 512 > img.length) return false;
@@ -34,6 +41,19 @@ core.ex.core_init(gen, Math.round(mhz * 1000), Number(opt("ram", "8192")), 0, 1,
 const now = new Date();
 core.ex.core_set_time(now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
 
+if (opt("trace")) core.ex.core_set_trace(Number(opt("trace")));
+const sparseMb = opt("sparse-mb");
+if (sparseMb) { /* build a system disk of this size in a sparse in-memory store */
+  const files = new Map<string, Uint8Array>();
+  for await (const e of Deno.readDir(join(root, "dos"))) if (e.isFile) files.set(e.name.toUpperCase(), await Deno.readFile(join(root, "dos", e.name)));
+  const plan = planDisk(Number(sparseMb));
+  const img = new SparseImage(plan.totalSectors);
+  const io: SectorIO = { readSectors: (l, c, d) => img.read(l, c, d), writeSectors: (l, c, s) => img.write(l, c, s) };
+  buildSystemDisk(io, Number(sparseMb), files);
+  disks.sparse.set(2, img);
+  core.ex.core_disk_attach(2, plan.totalSectors, 0);
+  console.log(`sparse disk: ${plan.totalSectors} sectors, ${plan.volumes.length} volumes, ${img.chunks.size} chunks used`);
+}
 const hdd = opt("hdd");
 if (hdd) { const img = await Deno.readFile(hdd); disks.images.set(2, img); core.ex.core_disk_attach(2, img.length / 512, 0); }
 const fd = opt("floppy");

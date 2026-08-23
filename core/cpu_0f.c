@@ -12,6 +12,7 @@ static void bit_op(int kind, u32 bitoff, int from_reg) {
     cpu.ea = cpu.asize32 ? cpu.ea + (u32)(unit * (bits / 8)) : ((cpu.ea + (u32)(unit * (bits / 8))) & 0xFFFF);
   }
   u32 bit = bitoff & (u32)(bits - 1);
+  if (kind && !rm_probe(bits)) return;
   v = rm_rdv();
   FAULT_CHECK();
   int cf = (v >> bit) & 1;
@@ -55,6 +56,7 @@ static void shld_shrd(int left, u32 count) {
   int bits = osize_bits();
   u32 m = size_mask(bits);
   count &= 0x1F;
+  if (!rm_probe(bits)) return;
   u32 dst = rm_rdv() & m;
   FAULT_CHECK();
   if (count == 0) return;
@@ -79,9 +81,8 @@ void cpu_exec_0f(void) {
   u8 op = fetch8();
   switch (op) {
     case 0x00: /* group 6 (pmode only) */
-      if (!in_pmode() || in_v86()) { cpu_ud(); return; }
-      dm_log("CPU: group 6 op not implemented");
-      cpu.fatal = 1;
+      if (!in_prot()) { cpu_ud(); return; }
+      cpu_sys_0f00();
       return;
     case 0x01: { /* group 7 */
       decode_modrm();
@@ -96,6 +97,7 @@ void cpu_exec_0f(void) {
         }
         case 2: case 3: { /* LGDT / LIDT */
           if (rm_is_reg()) { cpu_ud(); return; }
+          if (!require_cpl0()) return;
           u32 limit = rd16s(cpu.ea_seg, cpu.ea);
           u32 base = rd32s(cpu.ea_seg, cpu.ea + 2);
           FAULT_CHECK();
@@ -109,56 +111,66 @@ void cpu_exec_0f(void) {
           else rm_wr16((u16)cpu.cr0);
           return;
         case 6: { /* LMSW */
+          if (!require_cpl0()) return;
           u32 v = rm_rd16();
           FAULT_CHECK();
-          u32 ncr0 = (cpu.cr0 & ~0xEu) | (v & 0xF) | (cpu.cr0 & 1);
-          if ((v & 1) && !(cpu.cr0 & 1)) dm_log("CPU: LMSW set PE (protected mode requested)");
-          cpu.cr0 = ncr0 | (v & 1);
+          if ((v & 1) && !(cpu.cr0 & 1)) cpu.cpl = 0;
+          cpu.cr0 = (cpu.cr0 & ~0xEu) | (v & 0xF) | (cpu.cr0 & 1); /* PE can be set, never cleared */
+          cpu_update_cpl();
           return;
         }
         case 7: /* INVLPG */
           if (rm_is_reg() || cpu.gen < GEN_486) { cpu_ud(); return; }
+          if (!require_cpl0()) return;
+          tlb_flush_page(cpu.seg[cpu.ea_seg].base + cpu.ea);
           return;
         default: cpu_ud(); return;
       }
     }
     case 0x02: case 0x03: /* LAR / LSL */
-      if (!in_pmode() || in_v86()) { cpu_ud(); return; }
-      dm_log("CPU: LAR/LSL not implemented");
-      cpu.fatal = 1;
+      if (!in_prot()) { cpu_ud(); return; }
+      cpu_sys_lar_lsl(op == 0x03);
       return;
-    case 0x06: cpu.cr0 &= ~8u; return; /* CLTS */
+    case 0x06: if (!require_cpl0()) return; cpu.cr0 &= ~8u; return; /* CLTS */
     case 0x08: case 0x09: if (cpu.gen < GEN_486) cpu_ud(); return; /* INVD / WBINVD */
     case 0x0B: cpu_ud(); return;
     case 0x20: { /* MOV r32, CRn */
       if (cpu.gen < GEN_386) { cpu_ud(); return; }
+      if (!require_cpl0()) return;
       decode_modrm();
       u32 v = cpu.modrm_reg == 0 ? cpu.cr0 : cpu.modrm_reg == 2 ? cpu.cr2 : cpu.modrm_reg == 3 ? cpu.cr3 : cpu.modrm_reg == 4 ? cpu.cr4 : 0;
       cpu.r[cpu.modrm_rm] = v;
       return;
     }
-    case 0x21: { if (cpu.gen < GEN_386) { cpu_ud(); return; } decode_modrm(); cpu.r[cpu.modrm_rm] = cpu.dr[cpu.modrm_reg]; return; }
+    case 0x21: { if (cpu.gen < GEN_386) { cpu_ud(); return; } if (!require_cpl0()) return; decode_modrm(); cpu.r[cpu.modrm_rm] = cpu.dr[cpu.modrm_reg]; return; }
     case 0x22: { /* MOV CRn, r32 */
       if (cpu.gen < GEN_386) { cpu_ud(); return; }
+      if (!require_cpl0()) return;
       decode_modrm();
       u32 v = cpu.r[cpu.modrm_rm];
       switch (cpu.modrm_reg) {
-        case 0:
-          if ((v & 1) != (cpu.cr0 & 1)) dm_log("CPU: CR0.PE -> %d", v & 1);
-          if ((v & 0x80000000u) != (cpu.cr0 & 0x80000000u)) dm_log("CPU: CR0.PG -> %d", v >> 31);
+        case 0: {
+          u32 changed = v ^ cpu.cr0;
+          if ((v & 0x80000001u) == 0x80000000u) { raise_fault(EXC_GP, 1, 0); return; } /* PG without PE */
           cpu.cr0 = v;
+          if (changed & 0x80010001u) tlb_flush(); /* PE, PG, WP */
+          if (changed & 1) cpu.cpl = 0; /* entering or leaving protected mode starts at ring 0 */
+          cpu_update_cpl();
+          cpu.fetch_page_lin = 0xFFFFFFFFu;
           break;
+        }
         case 2: cpu.cr2 = v; break;
-        case 3: cpu.cr3 = v; break;
-        case 4: cpu.cr4 = v; break;
+        case 3: cpu.cr3 = v; tlb_flush(); break;
+        case 4: if (cpu.gen < GEN_486) { cpu_ud(); return; } cpu.cr4 = v; tlb_flush(); break;
         default: cpu_ud(); break;
       }
       return;
     }
-    case 0x23: { if (cpu.gen < GEN_386) { cpu_ud(); return; } decode_modrm(); cpu.dr[cpu.modrm_reg] = cpu.r[cpu.modrm_rm]; return; }
-    case 0x30: if (cpu.gen < GEN_P5) { cpu_ud(); return; } return; /* WRMSR: ignored */
+    case 0x23: { if (cpu.gen < GEN_386) { cpu_ud(); return; } if (!require_cpl0()) return; decode_modrm(); cpu.dr[cpu.modrm_reg] = cpu.r[cpu.modrm_rm]; return; }
+    case 0x30: if (cpu.gen < GEN_P5) { cpu_ud(); return; } if (!require_cpl0()) return; return; /* WRMSR: ignored */
     case 0x31: /* RDTSC */
       if (cpu.gen < GEN_P5) { cpu_ud(); return; }
+      if (in_pmode() && cpu.cpl != 0 && (cpu.cr4 & 4)) { raise_fault(EXC_GP, 1, 0); return; }
       cpu.r[REG_AX] = (u32)cpu.tsc;
       cpu.r[REG_DX] = (u32)(cpu.tsc >> 32);
       return;
@@ -186,9 +198,9 @@ void cpu_exec_0f(void) {
       rm_wr8(cond_true(op & 0xF) ? 1 : 0);
       return;
     case 0xA0: if (cpu.gen < GEN_386) { cpu_ud(); return; } pushv(cpu.seg[SEG_FS].sel); return;
-    case 0xA1: { if (cpu.gen < GEN_386) { cpu_ud(); return; } u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_FS, (u16)v); return; }
+    case 0xA1: { if (cpu.gen < GEN_386) { cpu_ud(); return; } u32 v = peekv(0); FAULT_CHECK(); load_seg(SEG_FS, (u16)v); if (!cpu.fault_pending) sp_add(cpu.osize32 ? 4 : 2); return; }
     case 0xA8: if (cpu.gen < GEN_386) { cpu_ud(); return; } pushv(cpu.seg[SEG_GS].sel); return;
-    case 0xA9: { if (cpu.gen < GEN_386) { cpu_ud(); return; } u32 v = popv(); FAULT_CHECK(); load_seg_real(SEG_GS, (u16)v); return; }
+    case 0xA9: { if (cpu.gen < GEN_386) { cpu_ud(); return; } u32 v = peekv(0); FAULT_CHECK(); load_seg(SEG_GS, (u16)v); if (!cpu.fault_pending) sp_add(cpu.osize32 ? 4 : 2); return; }
     case 0xA2: if (cpu.gen < GEN_486) { cpu_ud(); return; } cpuid(); return;
     case 0xA3: if (cpu.gen < GEN_386) { cpu_ud(); return; } decode_modrm(); bit_op(0, regv_get(cpu.modrm_reg), 1); return;
     case 0xAB: if (cpu.gen < GEN_386) { cpu_ud(); return; } decode_modrm(); bit_op(1, regv_get(cpu.modrm_reg), 1); return;
@@ -228,6 +240,7 @@ void cpu_exec_0f(void) {
     case 0xB0: { /* CMPXCHG r/m8, r8 */
       if (cpu.gen < GEN_486) { cpu_ud(); return; }
       decode_modrm();
+      if (!rm_probe(8)) return;
       u32 v = rm_rd8();
       FAULT_CHECK();
       u32 acc = reg8_get(0);
@@ -239,6 +252,7 @@ void cpu_exec_0f(void) {
     case 0xB1: {
       if (cpu.gen < GEN_486) { cpu_ud(); return; }
       decode_modrm();
+      if (!rm_probe(osize_bits())) return;
       u32 v = rm_rdv();
       FAULT_CHECK();
       u32 acc = regv_get(REG_AX);
@@ -255,7 +269,7 @@ void cpu_exec_0f(void) {
       u16 sel = rd16s(cpu.ea_seg, cpu.ea + (cpu.osize32 ? 4 : 2));
       FAULT_CHECK();
       int s = op == 0xB2 ? SEG_SS : op == 0xB4 ? SEG_FS : SEG_GS;
-      load_seg_real(s, sel);
+      load_seg(s, sel);
       FAULT_CHECK();
       regv_set(cpu.modrm_reg, off);
       if (s == SEG_SS) cpu.inhibit = 1;
@@ -280,6 +294,7 @@ void cpu_exec_0f(void) {
     case 0xC0: { /* XADD r/m8, r8 */
       if (cpu.gen < GEN_486) { cpu_ud(); return; }
       decode_modrm();
+      if (!rm_probe(8)) return;
       u32 d = rm_rd8();
       FAULT_CHECK();
       u32 s = reg8_get(cpu.modrm_reg);
@@ -291,6 +306,7 @@ void cpu_exec_0f(void) {
     case 0xC1: {
       if (cpu.gen < GEN_486) { cpu_ud(); return; }
       decode_modrm();
+      if (!rm_probe(osize_bits())) return;
       u32 d = rm_rdv();
       FAULT_CHECK();
       u32 s = regv_get(cpu.modrm_reg);
@@ -303,6 +319,7 @@ void cpu_exec_0f(void) {
       if (cpu.gen < GEN_P5) { cpu_ud(); return; }
       decode_modrm();
       if (rm_is_reg() || cpu.modrm_reg != 1) { cpu_ud(); return; }
+      if (!probe_write(cpu.ea_seg, cpu.ea, 8)) return;
       u32 lo = rd32s(cpu.ea_seg, cpu.ea), hi = rd32s(cpu.ea_seg, cpu.ea + 4);
       FAULT_CHECK();
       flags_sync();
