@@ -34,8 +34,9 @@ static s64 neglog2_q8(s64 v) {
     frac <<= 1;
     if (x >= (s64)2 << 30) { frac |= 1; x >>= 1; }
   }
-  /* value = 2^(-lg) * x0 with log2(x0) = frac/512 ∈ [0,1) → log2(value) = -lg + frac/512 */
-  s64 att = ((s64)lg << 8) - ((frac << 8) >> 9);
+  /* v was shifted lg times into [2^29, 2^30), so value = 2^-(lg+1) * x0 with x0 = x/2^30 ∈ [1,2)
+   * and log2(x0) = frac/512 → -log2(value) = (lg+1) - frac/512 */
+  s64 att = ((s64)(lg + 1) << 8) - ((frac << 8) >> 9);
   if (att < 0) att = 0;
   if (att > 0xFFF) att = 0xFFF;
   return att;
@@ -208,12 +209,15 @@ static void write_reg(int bank, u8 idx, u8 v) {
     }
     return;
   }
-  if (base == 0xA0 || base == 0xB0 || base == 0xC0) {
+  /* A0/B0/C0 are 0x10-wide register blocks — idx & 0xE0 would fold B0 into A0 and
+   * silently eat every key-on write, so these dispatch on idx & 0xF0. */
+  int hi = idx & 0xF0;
+  if (hi == 0xA0 || hi == 0xB0 || hi == 0xC0) {
     int chn = idx & 0x0F;
     if (chn > 8) return;
     int chi = bank * 9 + chn;
     Chan *c = &opl.ch[chi];
-    switch (base) {
+    switch (hi) {
       case 0xA0: c->fnum = (u16)((c->fnum & 0x300) | v); update_inc(chi); break;
       case 0xB0: {
         extern int cpu_trace_faults;
