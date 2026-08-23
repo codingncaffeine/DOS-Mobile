@@ -44,6 +44,10 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       break;
     }
     case "log": log(m.text); break;
+    case "audio":
+      if (audioNode) audioNode.port.postMessage({ buf: m.buf }, [m.buf]);
+      else { audioBacklog.push(m.buf); if (audioBacklog.length > 20) audioBacklog.shift(); }
+      break;
     case "imported": toast(`Copied ${m.count} file(s) to ${m.dosPath} — rebooting`, 6000); log(`imported ${m.count} files to ${m.dosPath}`); break;
     case "text": {
       let el = document.getElementById("screen-text");
@@ -248,6 +252,24 @@ for (const btn of osk.querySelectorAll<HTMLButtonElement>("button[data-code]")) 
 $("osk-text").onclick = () => proxy.focus();
 $("btn-keyboard").onclick = () => { osk.hidden = !osk.hidden; if (!osk.hidden) proxy.focus(); };
 proxy.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === "Backspace") { /* handled by the window handler via scancodes */ } });
+/* ---------------- audio ---------------- */
+let audioCtx: AudioContext | null = null;
+let audioNode: AudioWorkletNode | null = null;
+const audioBacklog: ArrayBuffer[] = [];
+async function ensureAudio() {
+  if (audioCtx) { if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {}); return; }
+  try {
+    audioCtx = new AudioContext({ sampleRate: 48000 });
+    await audioCtx.audioWorklet.addModule("audio-worklet.js");
+    audioNode = new AudioWorkletNode(audioCtx, "dm-audio", { outputChannelCount: [2] });
+    audioNode.connect(audioCtx.destination);
+    audioNode.port.postMessage({ rate: 48000 });
+    for (const buf of audioBacklog.splice(0)) audioNode.port.postMessage({ buf }, [buf]);
+  } catch (e) { log("audio unavailable: " + e); }
+}
+window.addEventListener("pointerdown", () => { ensureAudio(); }, { capture: true });
+window.addEventListener("keydown", () => { ensureAudio(); }, { capture: true });
+
 /* ---------------- mouse / touch pointer ---------------- */
 let mouseButtons = 0;
 function mouseScale(): number {

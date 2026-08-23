@@ -10,6 +10,7 @@
 #include "disk.h"
 #include "bios.h"
 #include "mouse.h"
+#include "audio.h"
 
 EXPORT("core_version") u32 core_version(void) { return 0x000001; }
 
@@ -78,3 +79,5 @@ EXPORT("core_text_cols") int core_text_cols(void) { return mem_rd16(BDA + 0x4A);
 EXPORT("core_text_rows") int core_text_rows(void) { return mem_rd8(BDA + 0x84) + 1; }
 EXPORT("core_text_is_text") int core_text_is_text(void) { return vga_mode_is_text(); }
 EXPORT("core_alloc") u8 *core_alloc(u32 size) { return (u8 *)dm_alloc(size); }
+EXPORT("core_audio_read") u32 core_audio_read(s16 *dst, u32 max_frames) { return audio_read(dst, max_frames); }
+EXPORT("core_audio_available") u32 core_audio_available(void) { return audio_available(); }

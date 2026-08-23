@@ -13,6 +13,9 @@ typedef void (*sched_fn)(void);
 
 extern s64 emu_ns;
 extern u32 cpu_khz;
+/* Fine-grained now: emu_ns plus the cycles the CPU has executed inside the current slice.
+ * Use this for anything guest-visible (timer counters, status flags, retrace bits). */
+s64 emu_now_ns(void);
 
 void sched_init(u32 khz);
 void sched_set_khz(u32 khz);

@@ -36,6 +36,8 @@ export interface CoreExports {
   core_text_rows(): number;
   core_text_is_text(): number;
   core_alloc(size: number): number;
+  core_audio_read(dst: number, maxFrames: number): number;
+  core_audio_available(): number;
 }
 
 export const GEN = { G8088: 0, G8086: 1, G186: 2, G286: 3, G386: 4, G486: 5, P5: 6, P6: 7 } as const;

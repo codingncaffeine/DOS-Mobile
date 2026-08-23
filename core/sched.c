@@ -7,10 +7,12 @@ u32 cpu_khz = 66000;
 
 static struct { s64 at; sched_fn fn; int active; } events[EV_COUNT];
 static s64 ns_rem; /* fractional carry for cycles→ns */
+static u64 cycles_anchor; /* cpu.cycles when emu_ns was last brought up to date */
 
 void sched_init(u32 khz) {
   emu_ns = 0;
   ns_rem = 0;
+  cycles_anchor = cpu.cycles;
   cpu_khz = khz ? khz : 1;
   for (int i = 0; i < EV_COUNT; i++) events[i].active = 0;
 }
@@ -32,6 +34,8 @@ static s64 next_event(void) {
     if (events[i].active && events[i].at < best) best = events[i].at;
   return best;
 }
+
+s64 emu_now_ns(void) { return emu_ns + ((s64)(cpu.cycles - cycles_anchor) * 1000000LL) / (s64)cpu_khz; }
 
 s64 ns_to_cycles(s64 ns) { return (ns * (s64)cpu_khz) / 1000000LL; }
 s64 cycles_to_ns(s64 cycles) { return (cycles * 1000000LL) / (s64)cpu_khz; }
@@ -56,6 +60,7 @@ int sched_run_ns(s64 ns) {
     if (next > end) next = end;
     if (cpu.halted) {
       emu_ns = next; /* nothing to execute: let time flow to the next event */
+      cycles_anchor = cpu.cycles;
     } else {
       s64 budget = ns_to_cycles(next - emu_ns);
       if (budget < 1) budget = 1;
@@ -63,6 +68,7 @@ int sched_run_ns(s64 ns) {
       s64 total = (s64)done * 1000000LL + ns_rem;
       emu_ns += total / (s64)cpu_khz;
       ns_rem = total % (s64)cpu_khz;
+      cycles_anchor = cpu.cycles;
     }
     fire_due();
   }

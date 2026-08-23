@@ -92,8 +92,20 @@ function dumpPng(path: string) {
   Deno.writeFileSync(path, encodePng(w, hgt, rgba));
   console.log(`png: ${path} ${w}x${hgt}`);
 }
+const wavPath = opt("wav");
+const wavChunks: Int16Array[] = [];
+let wavPtr = 0;
 const t0 = performance.now();
 for (let ms = 0; ms < totalMs; ms += 10) {
+  if (wavPath) {
+    if (!wavPtr) wavPtr = core.ex.core_alloc(4096 * 4);
+    for (;;) {
+      const n = core.ex.core_audio_read(wavPtr, 4096);
+      if (!n) break;
+      wavChunks.push(new Int16Array(core.ex.memory.buffer.slice(wavPtr, wavPtr + n * 4)));
+      if (n < 4096) break;
+    }
+  }
   if (typeText && !typed && ms >= typeAt) {
     typed = true;
     const codes = textToScancodes(typeText.replace(/\\n/g, "\n"));
@@ -116,3 +128,24 @@ console.log("--- regs ---", JSON.stringify(core.regs()));
 const insns = Number(core.ex.core_insns());
 console.log(`insns=${insns} emu=${Number(core.ex.core_emu_ns()) / 1e6} ms wall=${wall.toFixed(0)} ms  ~${(insns / wall / 1000).toFixed(1)} MIPS host`);
 if (opt("save")) { const sp = disks.sparse.get(2); await Deno.writeFile(opt("save")!, sp ? sp.toBytes() : disks.images.get(2)!); console.log("saved", opt("save")); }
+if (wavPath) {
+  let total = 0;
+  for (const c of wavChunks) total += c.length;
+  const pcm = new Int16Array(total);
+  let o = 0;
+  for (const c of wavChunks) { pcm.set(c, o); o += c.length; }
+  const hdr = new ArrayBuffer(44);
+  const dv = new DataView(hdr);
+  const w = (off: number, s: string) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE");
+  w(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 2, true);
+  dv.setUint32(24, 48000, true); dv.setUint32(28, 48000 * 4, true); dv.setUint16(32, 4, true); dv.setUint16(34, 16, true);
+  w(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+  const outBytes = new Uint8Array(44 + pcm.length * 2);
+  outBytes.set(new Uint8Array(hdr));
+  outBytes.set(new Uint8Array(pcm.buffer), 44);
+  await Deno.writeFile(wavPath, outBytes);
+  let sum = 0, nz = 0, peak = 0;
+  for (let i = 0; i < pcm.length; i++) { const v = pcm[i]; sum += v * v; if (v) nz++; if (Math.abs(v) > peak) peak = Math.abs(v); }
+  console.log(`wav: ${wavPath} ${(pcm.length / 2 / 48000).toFixed(1)}s rms=${Math.sqrt(sum / Math.max(1, pcm.length)).toFixed(0)} peak=${peak} nonzero=${(nz * 100 / Math.max(1, pcm.length)).toFixed(0)}%`);
+}

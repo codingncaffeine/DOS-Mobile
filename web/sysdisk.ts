@@ -22,6 +22,7 @@ export const DEFAULT_AUTOEXEC_BAT = [
   "@ECHO OFF",
   "PATH C:\\DOS;C:\\",
   "PROMPT $P$G",
+  "SET BLASTER=A220 I5 D1 H5 P330 T6",
   "SET TEMP=C:\\TEMP",
   "ECHO.",
   "ECHO DOS Mobile - drop your programs into C:\\GAMES",

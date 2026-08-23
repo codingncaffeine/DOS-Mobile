@@ -32,6 +32,8 @@ let cpuBusyMs = 0, windowStart = 0, windowInsns = 0n, windowEmuUs = 0;
 let flushTimer: ReturnType<typeof setInterval> | undefined;
 let debugText = false;
 let autoType: { text: string; after: number } | null = null;
+let audioPtr = 0;
+const AUDIO_CHUNK = 2048;
 
 class SparseIO implements SectorIO {
   constructor(public img: SparseImage) {}
@@ -196,6 +198,15 @@ function tick() {
   cpuBusyMs += busy;
   windowEmuUs += ran;
   paint();
+  /* drain audio to the page (s16 stereo) */
+  if (!audioPtr) audioPtr = core.ex.core_alloc(AUDIO_CHUNK * 4);
+  for (;;) {
+    const frames = core.ex.core_audio_read(audioPtr, AUDIO_CHUNK);
+    if (!frames) break;
+    const buf = core.ex.memory.buffer.slice(audioPtr, audioPtr + frames * 4);
+    post({ type: "audio", buf, frames }, [buf]);
+    if (frames < AUDIO_CHUNK) break;
+  }
   if (now - windowStart >= 500) {
     const wall = now - windowStart;
     const insns = core.ex.core_insns();

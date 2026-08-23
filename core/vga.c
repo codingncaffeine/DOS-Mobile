@@ -47,7 +47,7 @@ static void update_timing(void) {
 }
 
 static int current_line(void) {
-  s64 t = emu_ns - vga.frame_start_ns;
+  s64 t = emu_now_ns() - vga.frame_start_ns;
   if (t < 0) return 0;
   s64 l = t / vga.line_ns;
   return l >= vga.total_lines ? vga.total_lines - 1 : (int)l;
@@ -288,7 +288,7 @@ static u8 rd_crtc(u16 port) {
     int line = current_line();
     if (line >= vga.visible_lines) s |= 0x09; /* vertical retrace + display disabled */
     else {
-      s64 t = (emu_ns - vga.frame_start_ns) % vga.line_ns;
+      s64 t = (emu_now_ns() - vga.frame_start_ns) % vga.line_ns;
       if (t > (vga.line_ns * 4) / 5) s |= 0x01; /* horizontal blanking */
     }
     return s;

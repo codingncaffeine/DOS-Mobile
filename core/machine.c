@@ -11,6 +11,9 @@
 #include "bios.h"
 #include "disk.h"
 #include "mouse.h"
+#include "dma.h"
+#include "sb.h"
+#include "audio.h"
 
 MachineConfig machine_cfg;
 static int reset_pending;
@@ -60,6 +63,9 @@ void machine_reset(int warm) {
   pic_init();
   pit_init();
   kbd_init();
+  dma_init();
+  sb_init();
+  audio_init();
   if (!warm) cmos_init(); else cmos_set_time(ty, tmo, td, th, tmi, ts);
   io_init();
   pic_register_ports();
@@ -67,6 +73,8 @@ void machine_reset(int warm) {
   kbd_register_ports();
   cmos_register_ports();
   vga_register_ports();
+  dma_register_ports();
+  sb_register_ports();
   io_register(0x92, 1, rd_misc, wr_misc);
   io_register(0xE9, 1, rd_misc, wr_misc);
   io_register(0x80, 1, rd_misc, wr_misc);
@@ -77,6 +85,7 @@ void machine_reset(int warm) {
   bios_init();
   bios_post_reset(warm);
   vga_reset();
+  audio_start();
   reset_pending = 0;
 }
 

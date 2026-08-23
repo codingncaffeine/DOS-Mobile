@@ -34,4 +34,5 @@ export type FromWorker =
   | { type: "progress"; text: string }
   | { type: "imported"; dosPath: string; count: number }
   | { type: "disk"; bytes: ArrayBuffer }
+  | { type: "audio"; buf: ArrayBuffer; frames: number }
   | { type: "error"; text: string };

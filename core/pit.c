@@ -21,7 +21,7 @@ typedef struct {
 static PitChan ch[3];
 static u8 port61;
 
-static s64 pit_now(void) { return ns_to_rate(emu_ns, PIT_HZ); }
+static s64 pit_now(void) { return ns_to_rate(emu_now_ns(), PIT_HZ); }
 static s64 tick_to_ns(s64 tick) { return rate_to_ns(tick, PIT_HZ); }
 static u32 period(PitChan *c) { return c->reload ? c->reload : 65536; }
 
@@ -151,7 +151,7 @@ static u8 rd_pit(u16 port) {
 static u8 rd_61(u16 port) {
   (void)port;
   u8 v = port61 & 0x0F;
-  if ((emu_ns / 15000) & 1) v |= 0x10; /* DRAM refresh toggle (~15 µs) */
+  if ((emu_now_ns() / 15000) & 1) v |= 0x10; /* DRAM refresh toggle (~15 µs) */
   if (pit_ch2_output()) v |= 0x20;
   return v;
 }
