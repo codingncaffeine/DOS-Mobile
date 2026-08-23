@@ -47,6 +47,7 @@ worker.onmessage = (ev: MessageEvent<FromWorker>) => {
       break;
     }
     case "log": log(m.text); break;
+    case "wiped": location.reload(); break;
     case "audio":
       if (audioNode) audioNode.port.postMessage({ buf: m.buf }, [m.buf]);
       else { audioBacklog.push(m.buf); if (audioBacklog.length > 20) audioBacklog.shift(); }
@@ -135,7 +136,15 @@ speed.oninput = () => {
 $("btn-reset").onclick = () => send({ type: "reset", warm: false });
 $("btn-fullscreen").onclick = () => { document.documentElement.requestFullscreen?.().catch(() => {}); };
 $("btn-export").onclick = () => send({ type: "exportDisk" });
-$("btn-wipe").onclick = () => { if (confirm("Erase drive C: and rebuild it with a fresh MS-DOS? Everything on it is lost.")) { send({ type: "wipeDisk" }); setTimeout(() => location.reload(), 500); } };
+$("btn-wipe").onclick = () => {
+  if (!confirm("Erase drive C: and rebuild it with a fresh MS-DOS? Everything on it is lost.")) return;
+  overlay.hidden = false;
+  overlayText.textContent = "Wiping drive C:…";
+  send({ type: "wipeDisk" });
+  // The reload happens on the worker's "wiped" ack (the IDB delete has committed by then);
+  // the timer is only a fallback in case the worker died.
+  setTimeout(() => location.reload(), 30000);
+};
 const fileFloppy = $<HTMLInputElement>("file-floppy");
 $("btn-floppy").onclick = () => fileFloppy.click();
 fileFloppy.onchange = async () => { const f = fileFloppy.files?.[0]; if (f) await insertFloppy(f); fileFloppy.value = ""; };

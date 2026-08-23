@@ -284,10 +284,14 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         break;
       }
       case "wipeDisk":
+        // Stop the machine and its flushes first, and only acknowledge once the IDB delete
+        // has committed — the page must not reload earlier or the abort keeps the old drive.
         running = false;
         clearInterval(flushTimer);
+        disks.images.delete(2);
         await store.deleteDisk(HDD_ID);
-        post({ type: "log", text: "drive C: wiped; reload the page to rebuild it" });
+        post({ type: "log", text: "drive C: wiped" });
+        post({ type: "wiped" });
         break;
       case "importFiles":
         await importInto(m.name, m.files.map((f) => ({ path: f.path, bytes: new Uint8Array(f.bytes) })));
