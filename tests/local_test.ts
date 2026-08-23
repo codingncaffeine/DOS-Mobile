@@ -95,3 +95,66 @@ Deno.test("host directory mounts as D: with lazy reads and DOS copies from it in
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("items spread whole across multiple volumes; archives skipped; README present", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "dmlocal2" });
+  const big = (seed: number, n: number) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * seed + (i >> 7)) & 0xFF; return b; };
+  const bins = [big(3, 2_500_000), big(5, 2_500_000), big(7, 2_500_000)];
+  try {
+    for (let g = 0; g < 3; g++) {
+      await Deno.mkdir(join(dir, `GAME${g + 1}`), { recursive: true });
+      await Deno.writeFile(join(dir, `GAME${g + 1}`, "DATA.BIN"), bins[g]);
+      await Deno.writeTextFile(join(dir, `GAME${g + 1}`, "ID.TXT"), `THIS IS GAME ${g + 1}\r\n`);
+    }
+    await Deno.writeTextFile(join(dir, "SKIPME.ZIP"), "not a real zip");
+
+    const files = new Map<string, Uint8Array>();
+    for await (const e of Deno.readDir(join(root, "dos"))) if (e.isFile) files.set(e.name.toUpperCase(), await Deno.readFile(join(root, "dos", e.name)));
+    const image = new Uint8Array(planDisk(32).totalSectors * 512);
+    buildSystemDisk(new ArraySectorIO(image), 32, files);
+
+    const disks = new Disks();
+    disks.images.set(2, image);
+    const logs: string[] = [];
+    const drive = new LocalFatDrive((s) => logs.push(s)).build(await localEntriesFromDir(dir), { diskMB: 16, volumeMB: 4 });
+    disks.local = drive;
+    assertEquals(drive.info.skippedArchives, 1);
+    assertEquals(drive.info.volumes.filter((v) => v.items.length).length, 3, "three volumes used: " + logs.join(" | "));
+    assertEquals(drive.info.tooBig.length, 0);
+    assertEquals(drive.info.notFit.length, 0);
+
+    const core = new Core(disks, (s) => logs.push(s));
+    await core.load(await Deno.readFile(join(root, "dist", "dosmobile.wasm")));
+    core.ex.core_init(GEN.G486, 66_000, 4096, 0, 1, 4, 0);
+    core.ex.core_disk_attach(2, image.length / 512, 0);
+    core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
+
+    await runMs(core, 2500);
+    assertStringIncludes(core.textScreen().join("\n"), "C:\\>");
+
+    for (const c of textToScancodes("D:\nDIR\n")) core.ex.core_key(c);
+    await runMs(core, 2000);
+    const screen = core.textScreen().join("\n");
+    assertStringIncludes(screen, "GAME1");
+    assertStringIncludes(screen, "README   TXT");
+
+    for (const c of textToScancodes("E:\nTYPE GAME2\\ID.TXT\n")) core.ex.core_key(c);
+    await runMs(core, 2000);
+    assertStringIncludes(core.textScreen().join("\n"), "THIS IS GAME 2");
+
+    for (const c of textToScancodes("F:\nTYPE GAME3\\ID.TXT\n")) core.ex.core_key(c);
+    await runMs(core, 2000);
+    assertStringIncludes(core.textScreen().join("\n"), "THIS IS GAME 3");
+
+    for (const c of textToScancodes("COPY F:\\GAME3\\DATA.BIN C:\\Y.BIN\n")) core.ex.core_key(c);
+    await runMs(core, 20000);
+    assertStringIncludes(core.textScreen().join("\n"), "1 File(s) copied");
+
+    const fs = new FatFs(new ArraySectorIO(image)).mount();
+    const entry = fs.find(0, "Y.BIN");
+    assert(entry, "Y.BIN exists on C: (" + logs.join(" | ") + ")");
+    assertEquals(fs.readFile(entry!), bins[2], "cross-volume copy is byte-identical");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

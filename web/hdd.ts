@@ -14,7 +14,7 @@ export interface DiskPlan {
 }
 
 /** Split a disk of sizeMB into volumes: C: up to 2 GB, the rest as logical drives in an extended partition. */
-export function planDisk(sizeMB: number): DiskPlan {
+export function planDisk(sizeMB: number, maxVolumeMB = MAX_VOLUME_MB): DiskPlan {
   const heads = sizeMB > 504 ? 255 : 16, spt = 63;
   const cylSectors = heads * spt;
   let cyls = Math.floor(sizeMB * 2048 / cylSectors);
@@ -22,7 +22,7 @@ export function planDisk(sizeMB: number): DiskPlan {
   if (cyls < 2) cyls = 2;
   const totalSectors = cyls * cylSectors;
   const volumes: DiskPlan["volumes"] = [];
-  const maxVol = MAX_VOLUME_MB * 2048;
+  const maxVol = maxVolumeMB * 2048;
   // primary: starts at track 1, ends on a cylinder boundary
   let start = spt;
   let remaining = totalSectors - start;
@@ -99,8 +99,8 @@ export function formatVolume(io: SectorIO, startLba: number, sectors: number, sp
 }
 
 /** Create the partition table(s) and format every volume. Returns the plan. */
-export function formatDisk(io: SectorIO, sizeMB: number, bootCode: Uint8Array, label = "DOS MOBILE"): DiskPlan {
-  const plan = planDisk(sizeMB);
+export function formatDisk(io: SectorIO, sizeMB: number, bootCode: Uint8Array, label = "DOS MOBILE", maxVolumeMB = MAX_VOLUME_MB): DiskPlan {
+  const plan = planDisk(sizeMB, maxVolumeMB);
   const { heads, spt } = plan;
   const mbr = new Uint8Array(SECTOR);
   mbr.set(MBR_CODE, 0);

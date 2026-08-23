@@ -124,8 +124,13 @@ async function mountLocal(handle: FileSystemDirectoryHandle, name: string) {
   disks.local = drive;
   await store.putMeta({ id: LOCAL_META, sectors: 0, created: Date.now(), handle, name, signature: drive.info.signature });
   core.ex.core_disk_attach(3, drive.info.totalSectors, 0);
-  const drop = drive.info.dropped ? `, ${drive.info.dropped} left out (over 2 GB)` : "";
-  post({ type: "log", text: `games folder "${name}" is drive D: (${drive.info.files} files${drop})` });
+  const nVols = drive.info.volumes.filter((v) => v.items.length).length;
+  const extras = [
+    drive.info.skippedArchives ? `${drive.info.skippedArchives} archives skipped` : "",
+    drive.info.tooBig.length ? `${drive.info.tooBig.length} over 2 GB` : "",
+    drive.info.notFit.length ? `${drive.info.notFit.length} did not fit` : "",
+  ].filter(Boolean).join(", ");
+  post({ type: "log", text: `games folder "${name}" mounted: ${drive.info.files} files on ${nVols} volume(s) starting at D:` + (extras ? ` (${extras}; see D:\\README.TXT)` : " (see D:\\README.TXT)") });
   post({ type: "localFolder", state: "mounted", name });
 }
 
@@ -157,6 +162,19 @@ async function ensureHdd(dosBase: string, sizeMB: number) {
     const img = new SparseImage(meta.sectors);
     img.chunks = await store.loadChunks(HDD_ID);
     disks.images.set(2, img);
+    try { // one-time: raise the previously shipped LASTDRIVE=H so games volumes get letters
+      const fs = new FatFs(new SparseIO(img)).mount();
+      const e = fs.find(0, "CONFIG.SYS");
+      if (e) {
+        const txt = new TextDecoder().decode(fs.readFile(e));
+        if (txt.includes("LASTDRIVE=H")) {
+          fs.writeFile(0, "CONFIG.SYS", new TextEncoder().encode(txt.replace("LASTDRIVE=H", "LASTDRIVE=Z")));
+          fs.flush();
+          await store.putChunks(HDD_ID, img.takeDirty());
+          post({ type: "log", text: "CONFIG.SYS updated: LASTDRIVE=Z (letters for the games volumes)" });
+        }
+      }
+    } catch { /* leave the image untouched */ }
     return;
   }
   post({ type: "progress", text: "Preparing drive C:" });

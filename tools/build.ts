@@ -47,6 +47,18 @@ async function buildWeb() {
   for (const f of ["index.html", "app.css", "manifest.webmanifest", "icon.svg", "sw.js", ".htaccess"]) {
     try { await Deno.copyFile(join(root, "web", f), join(root, "dist", f)); } catch { /* optional */ }
   }
+  // Cache busting: index.html is served no-cache; everything it pulls in carries the build stamp,
+  // so a plain reload picks up every deploy (no hard-refresh ritual, PWA windows included).
+  const stamp = Date.now().toString(36);
+  const stampFile = async (name: string, refs: string[]) => {
+    const p = join(root, "dist", name);
+    let t = await Deno.readTextFile(p);
+    for (const r of refs) t = t.replaceAll(r, `${r}?v=${stamp}`);
+    await Deno.writeTextFile(p, t);
+  };
+  await stampFile("index.html", ["app.css", "app.js"]);
+  await stampFile("app.js", ["worker.js", "dosmobile.wasm", "audio-worklet.js"]);
+  console.log(`stamp: ${stamp}`);
   // DOS files: the in-browser FAT builder fetches them by manifest
   const dosDir = join(root, "dos");
   const outDos = join(root, "dist", "dos");

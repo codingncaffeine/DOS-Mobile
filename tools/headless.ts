@@ -132,8 +132,9 @@ for (let ms = 0; ms < totalMs; ms += 10) {
   if (pngIndex < pngAt.length && ms >= pngAt[pngIndex]) { dumpPng((pngPath ?? ".cache/shot.png").replace(/\.png$/, `-${pngAt[pngIndex]}.png`)); pngIndex++; }
   const r = core.ex.core_run_us(10_000);
   if (r === 1) { console.log("FATAL at", ms, "ms"); break; }
-  // with an async disk attached, let its pending file reads resolve
-  if (localDir) await new Promise((res) => setTimeout(res, 0));
+  // with an async disk attached, let its pending file reads resolve (the pending path
+  // always halts the CPU, so yielding only when halted keeps full speed while computing)
+  if (localDir && core.ex.core_halted()) await new Promise((res) => setTimeout(res, 0));
 }
 if (pngPath) dumpPng(pngPath);
 const wall = performance.now() - t0;
