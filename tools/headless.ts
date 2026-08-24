@@ -126,8 +126,8 @@ for (let ms = 0; ms < totalMs; ms += 10) {
   }
   for (const s of script) if (!s.done && ms >= s.at) {
     s.done = true;
-    if (s.text.startsWith("M")) { const [dx, dy, btn] = s.text.slice(1).split(",").map(Number); core.ex.core_mouse(dx, dy, btn); }
-    else if (s.text.startsWith("K")) { /* raw scancodes, hex, e.g. KE0,50,E0,D0 (gray down press+release) */
+    if (/^M-?\d+,-?\d+,\d+$/.test(s.text.trim())) { const [dx, dy, btn] = s.text.slice(1).split(",").map(Number); core.ex.core_mouse(dx, dy, btn); }
+    else if (/^K[0-9A-Fa-f]{2}(,[0-9A-Fa-f]{2})*$/.test(s.text.trim())) { /* raw scancodes, hex, e.g. KE0,50,E0,D0 (gray down press+release) */
       for (const h of s.text.slice(1).split(",")) core.ex.core_key(parseInt(h, 16));
     } else for (const c of textToScancodes(s.text)) core.ex.core_key(c);
   }
