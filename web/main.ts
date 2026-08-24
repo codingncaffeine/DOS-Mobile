@@ -103,6 +103,12 @@ function sendScan(sc: number, make: boolean) {
   send({ type: "key", codes });
 }
 const passthrough = new Set(["F11"]);
+// The machine must always get the keyboard: a clicked button/slider would otherwise keep focus
+// and the keydown handler below would skip every following keypress ("flaky keyboard").
+window.addEventListener("pointerup", () => {
+  const el = document.activeElement as HTMLElement | null;
+  if (el && el !== proxy && (el.tagName === "BUTTON" || el.tagName === "INPUT")) el.blur();
+}, { capture: true });
 window.addEventListener("keydown", (e) => {
   if (e.target === speed || (e.target as HTMLElement)?.tagName === "BUTTON") return;
   if (e.target === proxy && (e.key.length === 1 || e.key === "Unidentified" || e.keyCode === 229)) return; // IME/text path
