@@ -1,6 +1,7 @@
 // Page shell: starts the worker, routes input, paints frames (fallback), renders status.
 import { SCAN, textToScancodes } from "./core.ts";
 import { DEFAULT_SETTINGS, type FromWorker, type MachineSettings, type ToWorker } from "./protocol.ts";
+import { isRarVolumeSet } from "./rar.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("screen");
@@ -231,6 +232,14 @@ async function importPicked(items: Picked[], nameHint?: string) {
     const bytes = await items[0].file.arrayBuffer();
     toast(`Copying ${items[0].file.name} to C:\\GAMES…`);
     send({ type: "importZip", name: items[0].file.name, bytes }, [bytes]);
+    return;
+  }
+  if (isRarVolumeSet(items.map((it) => it.file.name))) {
+    const volumes: { name: string; bytes: ArrayBuffer }[] = [];
+    for (const it of items) volumes.push({ name: it.file.name, bytes: await it.file.arrayBuffer() });
+    const name = items[0].file.name.replace(/\.part\d+(?=\.rar$)/i, "").replace(/\.r\d\d$/i, ".rar");
+    toast(`Extracting ${volumes.length > 1 ? `${volumes.length} RAR volumes` : items[0].file.name} to C:\\GAMES…`);
+    send({ type: "importRar", name, volumes }, volumes.map((v) => v.bytes));
     return;
   }
   const files: { path: string; bytes: ArrayBuffer }[] = [];

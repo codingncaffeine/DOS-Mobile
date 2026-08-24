@@ -8,6 +8,7 @@ import { planDisk } from "./hdd.ts";
 import { FatFs, type SectorIO } from "./fatfs.ts";
 import { entriesFromDirectory, LocalFatDrive } from "./localdrive.ts";
 import { readZip } from "./zip.ts";
+import { extractRar } from "./rar.ts";
 import { textToScancodes } from "./core.ts";
 import type { FromWorker, MachineSettings, ToWorker } from "./protocol.ts";
 
@@ -421,6 +422,20 @@ self.onmessage = async (ev: MessageEvent<ToWorker>) => {
         const entries = await readZip(new Uint8Array(m.bytes));
         const files: { path: string; bytes: Uint8Array }[] = [];
         for (const e of entries) if (!e.isDir) files.push({ path: e.path, bytes: await e.data() });
+        await importInto(m.name, files);
+        break;
+      }
+      case "importRar": {
+        const vols = m.volumes.map((v) => ({ name: v.name, bytes: new Uint8Array(v.bytes) }));
+        const files: { path: string; bytes: Uint8Array }[] = [];
+        const result = await extractRar(
+          vols,
+          (entry, data) => { if (!entry.isDir) files.push({ path: entry.path, bytes: data }); },
+          (text) => post({ type: "progress", text }),
+        );
+        for (const w of result.warnings.slice(0, 3)) post({ type: "log", text: `RAR: ${w}` });
+        if (result.warnings.length > 3) post({ type: "log", text: `RAR: …and ${result.warnings.length - 3} more warnings` });
+        if (!files.length) throw new Error(result.warnings[0] ?? "empty RAR archive");
         await importInto(m.name, files);
         break;
       }

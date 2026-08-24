@@ -23,6 +23,7 @@ export type ToWorker =
   | { type: "detachFloppy" }
   | { type: "importFiles"; name: string; files: { path: string; bytes: ArrayBuffer }[] }
   | { type: "importZip"; name: string; bytes: ArrayBuffer }
+  | { type: "importRar"; name: string; volumes: { name: string; bytes: ArrayBuffer }[] }
   | { type: "exportDisk" }
   | { type: "wipeDisk" }
   | { type: "connectLocalFolder"; handle: FileSystemDirectoryHandle; name: string }
